@@ -107,3 +107,11 @@ def test_a_leader_that_drifts_while_torque_is_off_doesnt_take_over(core):
     core.ctl.arm()
     sim_wait(core, 0.2)
     assert core.ctl.mode["left"] == "hold" and core.interventions == 0
+
+
+def test_stop_leaves_an_arm_vlad_holds_in_manual(core):
+    sim_wait(core, 0.1)
+    core.leaders["left"].q[0] += 15
+    assert wait(lambda: core.ctl.mode["left"] == "manual")
+    core.handle(dict(cmd="stop", reason="test"))
+    assert core.ctl.mode["left"] == "manual" and core.ctl.mode["right"] == "hold"

@@ -219,10 +219,14 @@ class Controller:
                 self.on_event(f"stopped: {reason}", "warn")
             self._abort(reason)
             self.target = {}
-            for s in self.ios:
-                if self.mode[s] != "off":
-                    self.goal[s] = self.q[s].copy()
-                    self.mode[s] = "hold"
+            self._hold_all()
+
+    def _hold_all(self):
+        """Every powered arm holds where it is, except one Vlad has with its leader (it keeps following)."""
+        for s in self.ios:
+            if self.mode[s] not in ("off", "manual"):
+                self.goal[s] = self.q[s].copy()
+                self.mode[s] = "hold"
 
     def _abort(self, reason):
         if self.queue:
@@ -263,10 +267,7 @@ class Controller:
                 self.on_event(f"{s} bus not answering ({e}): stopped, holding", "warn")
                 self._abort(f"blocked: bus: {s} not answering")
                 self.target = {}
-                for t in self.ios:
-                    if self.mode[t] != "off":
-                        self.goal[t] = self.q[t].copy()
-                        self.mode[t] = "hold"
+                self._hold_all()
             elif n == BUS_LOST_TICKS:
                 self.on_event(f"{s} bus lost for {n * TICK:.0f} s: check its USB cable and power", "error")
             return None
@@ -301,10 +302,7 @@ class Controller:
                         stuck = max(traj.rows, key=lambda s: float(np.max(np.abs(self.goal[s][:5] - self.q[s][:5]))))
                         self.on_event(f"{stuck} stopped {far:.0f} deg short of its goal, holding", "warn")
                         self._abort(f"blocked: {stuck} stopped {far:.0f} deg short of its goal")
-                        for s in self.mode:
-                            if self.mode[s] != "off":
-                                self.goal[s] = self.q[s].copy()
-                                self.mode[s] = "hold"
+                        self._hold_all()
                     elif far < SETTLE_DEG or self.settle >= SETTLE_TICKS or len(self.queue) > 1:
                         self.queue.pop(0)
                         self.k = self.settle = 0
@@ -430,10 +428,7 @@ class Controller:
                 self._abort(f"blocked: {s} is {err:.0f} deg behind its goal")
                 self.target = {}
                 self.on_event(f"reflex: {s} is {err:.0f} deg behind its goal, holding", "warn")
-                for t in self.ios:
-                    if self.mode[t] != "off":
-                        self.goal[t] = self.q[t].copy()
-                        self.mode[t] = "hold"
+                self._hold_all()
         if self.ticks % TEMP_EVERY == 0:
             for s, io in self.ios.items():
                 temps = self._bus(s, io.temperatures)
@@ -444,10 +439,7 @@ class Controller:
                 if hot >= HOT_C and (self.queue or self.target):
                     self._abort(f"hot: {s} servo at {hot:.0f} C")
                     self.target = {}
-                    for t in self.ios:
-                        if self.mode[t] != "off":
-                            self.goal[t] = self.q[t].copy()
-                            self.mode[t] = "hold"
+                    self._hold_all()
                     self.on_event(f"{s} servo at {hot:.0f} C: stopped, let it cool", "warn")
                 elif hot >= WARM_C and self.ticks % (TEMP_EVERY * 15) == 0:
                     self.on_event(f"{s} servo at {hot:.0f} C", "warn")
