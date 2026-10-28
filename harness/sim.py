@@ -117,6 +117,16 @@ class SimArmIO:
         self.stalled = stop is not None
 
 
+class SimLeaderIO:
+    """A leader arm for tests: wherever q is set."""
+
+    def __init__(self, q0):
+        self.q = np.asarray(q0, dtype=float).copy()
+
+    def read(self):
+        return self.q.copy()
+
+
 class SimWorld:
     def __init__(self, scene, objects="brush", noise=0.0, seed=0, sag=True, faults=None):
         self.scene = scene

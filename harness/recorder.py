@@ -104,7 +104,7 @@ class Recorder:
             objects = self.core.perception.detect() if self.core.perception else []
             self.ep = dict(index=self.ds.meta.total_episodes, task=task, source=source or {"kind": "pingpong"},
                            giver=giver, taker=taker, target_cm=target_cm, frames=0, camera_gaps=0, recording=True,
-                           steps=[], bus0=self.core.ctl.bus_faults,
+                           steps=[], bus0=self.core.ctl.bus_faults, takeovers0=self.core.ctl.takeovers,
                            ev0=self.core.ev_id, start_objects=objects,
                            started=datetime.datetime.now().astimezone().isoformat(timespec="milliseconds"))
             self.queue = queue.Queue()
@@ -230,7 +230,8 @@ class Recorder:
                 "frames": ep["frames"], "source": ep["source"],
                 "robot": dict(started=ep["started"], duration_s=round(duration, 2), giver=ep["giver"],
                               taker=ep["taker"], target_cm=ep["target_cm"], valid=bool(valid), note=note,
-                              camera_gaps=ep["camera_gaps"], bus_faults=ep.get("bus_faults", 0), interventions=0, steps=ep["steps"], events=events, object=obj, check=check,
+                              camera_gaps=ep["camera_gaps"], bus_faults=ep.get("bus_faults", 0),
+                              interventions=self.core.ctl.takeovers - ep["takeovers0"], steps=ep["steps"], events=events, object=obj, check=check,
                               log=[dict(t=e["t"], kind=e["kind"], text=e["text"])
                                    for e in self.core.events_since(ep["ev0"])])}
 

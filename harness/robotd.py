@@ -79,7 +79,6 @@ class Core:
         self.ev_id = 0
         self.ev_lock = threading.Lock()
         self.holding = {s: None for s in SIDES}
-        self.interventions = 0  # times Vlad took over an arm (leader takeover, when it's built)
         self.last_objects = []
         self.cancel = threading.Event()
         self.skill = {}
@@ -104,7 +103,10 @@ class Core:
                    for s in SIDES}
         sag_file = None if sim_mode else os.path.join(SAG_DIR, "_".join(self.scene.calibration_ids[s] for s in SIDES)
                                                        + ".json")
-        self.ctl = Controller(ios, self.world, speed, on_event=self.event).set_arms(self.scene.arms, sag_file).start()
+        self.ctl = Controller(ios, self.world, speed, on_event=self.event).set_arms(self.scene.arms, sag_file)
+        if not sim_mode:
+            self.ctl.set_leaders(self.connect_leaders())
+        self.ctl.start()
         if vision or not sim_mode:  # objects from the overhead image, as on the real arms
             self.perception = TablePerception(self.scene, self.cameras, self.ctl, self.holding)
         self.planner = Planner(self.scene, self.holding)
@@ -120,6 +122,23 @@ class Core:
             self.recorder = Recorder(self, dataset, datasets)
         if sim_mode and arm:
             self.ctl.arm()
+
+    def connect_leaders(self):
+        """The leader arms, for takeover; one that isn't there only turns takeover off for its follower."""
+        from .bus import LeaderIO
+
+        leaders = {}
+        for s, cfg in self.scene.leaders.items():
+            try:
+                leaders[s] = LeaderIO(cfg["port"], cfg["calibration"], self.scene.stroke_mm)
+            except Exception as e:
+                self.event(f"no {s} leader ({e}): taking over the {s} arm by hand is off", "warn")
+        return leaders
+
+    @property
+    def interventions(self):
+        """Times Vlad took an arm over with its leader."""
+        return self.ctl.takeovers
 
     def close(self):
         if self.policy.active():

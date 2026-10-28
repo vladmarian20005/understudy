@@ -105,6 +105,8 @@ class Skills:
                 raise Fail("busy", "another motion is running")
             if why.startswith(("blocked", "hot", "control error")):
                 raise Stopped(why, "blocked")
+            if why.startswith("manual"):
+                raise Stopped(why.split(": ", 1)[1], "manual")
             if why.startswith("the plan starts"):
                 raise Fail("check", why)
             raise Stopped(why)

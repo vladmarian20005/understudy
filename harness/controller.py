@@ -17,6 +17,11 @@ Streaming (a policy driving the arms): stream() sets a pose target per arm, and 
 at most STREAM_DEG_S / STREAM_MM_S, so a jumpy policy can't jerk the arms. Trajectories and streaming exclude each
 other.
 
+Leader takeover: moving a leader arm more than TAKEOVER_DEG from where it rested takes its follower over at once. Any
+motion or policy stops, the follower trails the leader (rate-limited, inside its joint limits) in mode "manual", and
+nothing else can move until the leader has rested for RELEASE_S, when the arm holds where it was left. takeovers
+counts them: they are the interventions.
+
 Bus drop-outs: a read or write that fails (after the driver's retries) is skipped, the arm keeps its last reading and
 its servos hold their last goal. BUS_STOP_TICKS failures in a row stop the motion (reason "blocked: bus ..."), and
 bus_faults counts those stops for the recorder; BUS_LOST_TICKS in a row is reported as a lost bus.
@@ -41,6 +46,10 @@ SETTLE_TICKS = 50  # or after this long
 SETTLE_FAIL_DEG = 5.0  # still this far off by then: the arm is stuck (blocked), not slow
 TEMP_EVERY = 100  # ticks
 WARM_C, HOT_C = 55, 62
+TAKEOVER_DEG = 8.0
+RELEASE_S = 2.0
+LEADER_STILL_DEG = 1.0  # a leader that stays within this of where it stopped is resting
+FOLLOW_DEG_S = 180.0
 BUS_STOP_TICKS = 5
 BUS_LOST_TICKS = 100
 CONTACT_M = 0.004
@@ -73,6 +82,11 @@ class Controller:
         self.touch_z = {}  # recent measured fingertip heights, per arm
         self.bus_errors = {}  # (arm, call) -> failures in a row: reads, writes and temperatures count apart
         self.bus_faults = 0  # motions stopped by a bus drop-out
+        self.leaders = {}  # side -> leader arm io (read only)
+        self.leader_ref = {}  # where each leader rested when its follower was last given back
+        self.leader_q = {}
+        self.manual = {}  # side -> dict(anchor=pose the leader last stopped at, still=ticks since)
+        self.takeovers = 0
         self.queue = []
         self.k = 0
         self.settle = 0
@@ -93,6 +107,11 @@ class Controller:
         self.sag_file = sag_file
         if sag_file:
             self.sag = gravity.load(sag_file, self.ios)
+        return self
+
+    def set_leaders(self, leaders):
+        """Leader arms (read-only ios, by side) whose movement takes their follower over."""
+        self.leaders = dict(leaders)
         return self
 
     def save_sag(self):
@@ -145,6 +164,7 @@ class Controller:
         with self.lock:
             self._abort("torque off")
             self.target = {}
+            self.manual = {}
             for s, io in self.ios.items():
                 io.torque(False)
                 self.mode[s] = "off"
@@ -160,6 +180,8 @@ class Controller:
                 return False, "busy"
             if self.target:
                 return False, "a policy is driving the arms"
+            if self.manual:
+                return False, f"manual: Vlad has the {next(iter(self.manual))} arm"
             first = trajs[0]
             for s, rows in first.rows.items():
                 off = float(np.max(np.abs(rows[0, :5] - self.goal[s][:5])))
@@ -183,7 +205,7 @@ class Controller:
         """Policy mode: each arm in `targets` heads for its pose (5 joints in degrees, gripper in mm), rate-limited.
         Returns False (and changes nothing) when torque is off or a trajectory is playing."""
         with self.lock:
-            if not self.armed() or self.queue:
+            if not self.armed() or self.queue or self.manual:
                 return False
             for s, g in targets.items():
                 self.target[s] = np.asarray(g, dtype=float).copy()
@@ -229,9 +251,9 @@ class Controller:
             else:
                 next_t = time.monotonic()
 
-    def _bus(self, s, fn, *args):
+    def _bus(self, s, fn, *args, key=None):
         """One bus call for arm s; counts failures in a row and stops motion when they persist."""
-        key = (s, fn.__name__)
+        key = key or (s, fn.__name__)
         try:
             out = fn(*args)
         except Exception as e:
@@ -259,6 +281,10 @@ class Controller:
                 q = self._bus(s, io.read)
                 if q is not None:
                     self.q[s] = q
+            for s, lio in self.leaders.items():
+                lq = self._bus(s, lio.read, key=(s, "leader"))
+                if lq is not None:
+                    self._leader(s, lq)
             if self.queue:
                 traj = self.queue[0]
                 n = len(next(iter(traj.rows.values())))
@@ -292,6 +318,14 @@ class Controller:
                     step = np.full(6, STREAM_DEG_S * TICK)
                     step[5] = STREAM_MM_S * TICK
                     self.goal[s] = self.goal[s] + np.clip(tgt - self.goal[s], -step, step)
+            for s in self.manual:  # the follower trails its leader
+                tgt = self.leader_q[s].copy()
+                if s in self.arms_k:
+                    lim = self.arms_k[s].limits
+                    tgt[:5] = np.clip(tgt[:5], lim[:, 0], lim[:, 1])
+                step = np.full(6, FOLLOW_DEG_S * TICK)
+                step[5] = STREAM_MM_S * TICK
+                self.goal[s] = self.goal[s] + np.clip(tgt - self.goal[s], -step, step)
             for s, io in self.ios.items():
                 if self.mode[s] != "off":
                     self._bus(s, io.write, self.command(s))
@@ -308,6 +342,37 @@ class Controller:
             t = self.t
         for fn in self.listeners:
             fn(t, q, goal)
+
+    def _leader(self, s, lq):
+        """Takeover and give-back for arm s, from its leader's latest reading."""
+        self.leader_q[s] = lq
+        if self.mode[s] == "off" or s not in self.leader_ref:
+            self.leader_ref[s] = lq.copy()
+            return
+        if s in self.manual:
+            m = self.manual[s]
+            if np.max(np.abs(lq[:5] - m["anchor"][:5])) > LEADER_STILL_DEG:
+                m["anchor"], m["still"] = lq.copy(), 0
+            else:
+                m["still"] += 1
+            if m["still"] * TICK >= RELEASE_S:
+                del self.manual[s]
+                self.leader_ref[s] = lq.copy()
+                self.goal[s] = self.q[s].copy()
+                self.mode[s] = "hold"
+                self.on_event(f"Vlad gave the {s} arm back")
+            return
+        if np.max(np.abs(lq[:5] - self.leader_ref[s][:5])) > TAKEOVER_DEG:
+            self._abort(f"manual: Vlad took over the {s} arm")
+            self.target = {}
+            for t in self.ios:
+                if self.mode[t] in ("moving", "policy"):
+                    self.goal[t] = self.q[t].copy()
+                    self.mode[t] = "hold"
+            self.mode[s] = "manual"
+            self.manual[s] = dict(anchor=lq.copy(), still=0)
+            self.takeovers += 1
+            self.on_event(f"Vlad took over the {s} arm", "warn")
 
     def _touched(self, traj):
         """The contact watch, for the arms this trajectory moves. Ends the trajectory on contact."""

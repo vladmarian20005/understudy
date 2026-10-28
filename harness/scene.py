@@ -58,6 +58,7 @@ class Scene:
                                    kin.motor_range_deg(a["calibration"]))
             self.ports[s] = a["port"]
         self.calibration_ids = {s: d["arms"][s]["calibration"] for s in SIDES}
+        self.leaders = d.get("leaders", {})  # side -> port and calibration of the leader arm that can take it over
         self.camera = Camera(**d["camera"])
         self.table_x = tuple(d["table"]["x"])
         self.table_y = tuple(d["table"]["y"])
