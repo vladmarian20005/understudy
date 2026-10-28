@@ -3,7 +3,8 @@
 A phase moves the arms named in it at the same time and ends when the slower one arrives. Each arm's goal is a
 `Goal`: a fingertip point, pitch and yaw (None keeps the current value), a gripper opening, or joint angles.
 Fingertips move in straight lines by default. Every tick of every phase is checked before anything moves: inverse
-kinematics, joint limits, the table, the workspace, and the gap between the two arms.
+kinematics, joint limits, the table, the workspace, the gap between the two arms, and that an object an arm holds
+(planner.holding, robotd's record of what each gripper holds) stays clear of the table.
 
 A trajectory row is the 5 joint angles (lerobot degrees) and the gripper opening (mm).
 """
@@ -23,6 +24,7 @@ TIP_FLOOR = 0.003  # m: the fingertips never go lower
 ARM_FLOOR = 0.02  # m: the rest of the arm stays this high
 ARM_GAP = 0.015  # m between the two arms' outlines
 RADII = (0.025, 0.025, 0.025, 0.03, 0.035)  # m: shoulder-upper arm, upper arm-elbow, forearm, wrist, gripper
+CARRY_FLOOR = 0.005  # m: a held object's lowest corner stays this high, except in a phase that lowers the floor
 Z_MAX = 0.40
 
 
@@ -49,12 +51,14 @@ class Phase:
     goals: dict  # side -> Goal
     speed: str = "normal"
     gap: float = ARM_GAP
+    stop_on_contact: bool = False  # the controller ends the phase when a moving arm's fingertips are held up
 
 
 @dataclass
 class Trajectory:
     name: str
     rows: dict  # side -> (N, 6) array; both have the same N
+    contact: bool = False  # stop on contact (Phase.stop_on_contact)
 
     @property
     def duration(self):
@@ -99,9 +103,17 @@ def arms_gap(pa, pb):
     return best
 
 
+def held_corners(T_tool, held):
+    """The 8 corners (world, m) of an object held as `held` (robotd's record: size, rel) by a gripper at T_tool."""
+    L, W, H = held["size"]
+    c = np.array([[sx * L / 2, sy * W / 2, sz * H / 2, 1.0] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])
+    return (T_tool @ held["rel"] @ c.T).T[:, :3]
+
+
 class Planner:
-    def __init__(self, scene):
+    def __init__(self, scene, holding=None):
         self.scene = scene
+        self.holding = holding if holding is not None else {}
 
     def _endpoint(self, arm, q0, goal):
         """The goal's pose with the current values filled in: (p, pitch, yaw, width, q_end)."""
@@ -162,7 +174,7 @@ class Planner:
             for s in q:
                 if s not in rows:
                     rows[s] = np.tile(q[s], (n, 1))
-            traj = Trajectory(ph.name, rows)
+            traj = Trajectory(ph.name, rows, ph.stop_on_contact)
             self.check(traj, ph)
             out.append(traj)
             q = {s: r[-1].copy() for s, r in rows.items()}
@@ -172,6 +184,7 @@ class Planner:
         sides = list(traj.rows)
         n = len(traj.rows[sides[0]])
         floors = {s: (phase.goals[s].floor if s in phase.goals else TIP_FLOOR) for s in sides}
+        carry_floor = {}  # a held object may start low (just picked up, or set down) but not go lower
         for k in list(range(0, n, 2)) + [n - 1]:
             pts = {}
             for s in sides:
@@ -189,6 +202,18 @@ class Planner:
                 if not self.scene.on_table(tip[:2]) or tip[2] > Z_MAX:
                     raise PlanError("check", f"{phase.name}: {s} fingertips would leave the workspace at "
                                     f"({tip[0] * 100:.0f}, {tip[1] * 100:.0f}, {tip[2] * 100:.0f}) cm", phase.name)
+                held = self.holding.get(s)
+                if held is not None:
+                    p_t, R_t = arm.tool(q)
+                    T = np.eye(4)
+                    T[:3, :3], T[:3, 3] = R_t, p_t
+                    low = float(np.min(held_corners(T, held)[:, 2]))
+                    # a touch-down lowers it until it rests on something, aiming below the table to find it
+                    floor = carry_floor.setdefault(s, -0.025 if phase.stop_on_contact
+                                                   else min(CARRY_FLOOR, floors[s], low - 0.001))
+                    if low < floor - 1e-4:
+                        raise PlanError("check", f"{phase.name}: the object {s} holds would hit the table "
+                                        f"({low * 100:.1f} cm)", phase.name)
             if len(sides) == 2:
                 gap = arms_gap(pts[sides[0]], pts[sides[1]])
                 if gap < phase.gap:

@@ -32,6 +32,7 @@ from .scene import SIDES, Scene
 from .skills import Skills
 
 PORT = int(os.environ.get("ROBOTD_PORT", 5560))
+SAG_DIR = os.path.expanduser("~/.cache/understudy")  # the arms' learned gravity sag, kept between runs
 CAMERAS = ("overhead", "left_wrist", "right_wrist")
 
 
@@ -61,7 +62,7 @@ class SimCameras:
 
 class Core:
     def __init__(self, sim_mode=True, speed=1.0, objects="brush", noise=0.0, arm=True, quiet=False,
-                 dataset="understudy_pass", datasets=DATASETS, vision=False, stream_cameras=False):
+                 dataset="understudy_pass", datasets=DATASETS, vision=False, stream_cameras=False, sag=True):
         self.scene = Scene()
         self.quiet = quiet
         self.events = collections.deque(maxlen=500)
@@ -76,7 +77,7 @@ class Core:
         self.recorder = None
         self.sim = sim_mode
         if sim_mode:
-            self.world = sim.SimWorld(self.scene, objects, noise)
+            self.world = sim.SimWorld(self.scene, objects, noise, sag=sag)
             ios = self.world.io
             self.cameras = SimCameras(self.scene, self.world)
             self.perception = SimPerception(self.world, self.scene)
@@ -89,10 +90,12 @@ class Core:
             self.cameras.wait()
             ios = {s: BusArmIO(self.scene.ports[s], self.scene.calibration_ids[s], self.scene.stroke_mm)
                    for s in SIDES}
-        self.ctl = Controller(ios, self.world, speed, on_event=self.event).start()
+        sag_file = None if sim_mode else os.path.join(SAG_DIR, "_".join(self.scene.calibration_ids[s] for s in SIDES)
+                                                       + ".json")
+        self.ctl = Controller(ios, self.world, speed, on_event=self.event).set_arms(self.scene.arms, sag_file).start()
         if vision or not sim_mode:  # objects from the overhead image, as on the real arms
             self.perception = TablePerception(self.scene, self.cameras, self.ctl, self.holding)
-        self.planner = Planner(self.scene)
+        self.planner = Planner(self.scene, self.holding)
         self.skills = Skills(self)
         self.policy = PolicyRunner(self)
         self.publisher = None
@@ -299,9 +302,10 @@ def main():
     ap.add_argument("--vision", action="store_true", help="simulator: find objects in the rendered overhead image")
     ap.add_argument("--no-camera-streams", action="store_true",
                     help="simulator: don't publish the rendered cameras on the camera ports")
+    ap.add_argument("--no-sag", action="store_true", help="simulator: servos that don't sag under gravity")
     a = ap.parse_args()
     core = Core(a.sim, a.speed, a.objects, a.noise / 100, dataset=a.dataset, vision=a.vision,
-                stream_cameras=not a.no_camera_streams)
+                stream_cameras=not a.no_camera_streams, sag=not a.no_sag)
     quit_event = threading.Event()
     if sys.stdin.isatty():
         threading.Thread(target=keyboard, args=(core, quit_event), daemon=True).start()

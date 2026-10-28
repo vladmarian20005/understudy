@@ -1,7 +1,10 @@
 """The simulator: both arms as position servos, boxes on the table, the parallel grippers, and rendered cameras.
 
 It plays the same role as the servo buses and the camera server. robotd runs on it unchanged with --sim.
-- Servos move toward their goal at a capped speed.
+- Servos move toward their goal at a capped speed, and sag under gravity like the real ones: each settles short of
+  its goal by compliance x the gravity torque on it (gravity.py), about 1 cm at the fingertips when extended.
+- The table and the objects' tops are solid: an arm whose fingertips (or held object) would go into them stops there.
+  Its encoders then fall behind its goal, which is how robotd feels contact on the real arms too.
 - A closing gripper stops on an object that lies between its fingers, which is then held and moves with the gripper.
   An object whose jaws open falls flat on the table, unless the other gripper still holds it.
 - Cameras are drawn with OpenCV from the same camera model as the real overhead camera, so pixels and table cm match
@@ -13,6 +16,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
+from . import gravity
 from .scene import Camera
 
 JOINT_SPEED = 180.0  # deg/s
@@ -20,6 +24,8 @@ GRIP_SPEED = 120.0  # mm/s
 FINGER_LEN = 0.04  # m: how far the fingers reach back from the fingertips
 PAD = 0.012  # m: half the finger pad's width
 MIN_OVERLAP = 0.003  # m: the fingers must reach this far below an object's top to hold it
+# deg per unit gravity torque (gravity.torque), per joint: the real arms sag 1-1.5 cm at the fingertips when extended
+SAG_COMPLIANCE = (0.0, 1200.0, 1300.0, 900.0, 0.0)
 
 # name, size L x W x H (m), colour (BGR), centre x, y (m), yaw (deg)
 SCENES = {
@@ -72,6 +78,7 @@ class SimArmIO:
         self.goal = self.q.copy()
         self.torque_on = False
         self.stalled = False  # the gripper is closed on something
+        self.blocked = False  # the arm is pressing on the table or an object
 
     def read(self):
         return self.q.copy()
@@ -90,8 +97,12 @@ class SimArmIO:
     def step(self, dt):
         if not self.torque_on:
             return
-        dq = np.clip(self.goal[:5] - self.q[:5], -JOINT_SPEED * dt, JOINT_SPEED * dt)
-        self.q[:5] += dq
+        arm = self.world.scene.arms[self.side]
+        target = self.goal[:5] - self.world.sag * gravity.torque(arm, self.goal)
+        q_next = self.q[:5] + np.clip(target - self.q[:5], -JOINT_SPEED * dt, JOINT_SPEED * dt)
+        self.blocked = self.world.solid_in_the_way(self.side, self.q, q_next)
+        if not self.blocked:
+            self.q[:5] = q_next
         w_goal = self.goal[5]
         w = self.q[5] + np.clip(w_goal - self.q[5], -GRIP_SPEED * dt, GRIP_SPEED * dt)
         stop = self.world.grip_stop(self.side, self.q[5], w)
@@ -100,8 +111,9 @@ class SimArmIO:
 
 
 class SimWorld:
-    def __init__(self, scene, objects="brush", noise=0.0, seed=0):
+    def __init__(self, scene, objects="brush", noise=0.0, seed=0, sag=True):
         self.scene = scene
+        self.sag = np.array(SAG_COMPLIANCE) if sag else np.zeros(5)
         self.rng = np.random.default_rng(seed)
         self.noise = noise  # m: error added to what perception reports
         self.objects = []
@@ -137,6 +149,42 @@ class SimWorld:
         overlap = min(fingers_high, top) - max(fingers_low, bottom)
         inside = abs(along_j) < w / 2000 and e_j <= w / 1000 + 0.002 and abs(along_k) <= e_k / 2 + PAD
         return inside and overlap >= MIN_OVERLAP and top - fingers_low >= MIN_OVERLAP, along_j, e_j
+
+    def solid_in_the_way(self, side, q_now, q_next):
+        """Whether moving this arm's joints from q_now to q_next would push its fingertips, or the object it holds,
+        into the table or the top of an object."""
+        arm = self.scene.arms[side]
+        w = self.io[side].q[5] / 2000
+
+        def fingers(q):
+            p, R = arm.tool(q)
+            j = R @ arm.jaw
+            return [p + j * w, p - j * w], p, R
+
+        tips, p, R = fingers(q_next)
+        if min(t[2] for t in tips) < 0:
+            return True
+        T = np.eye(4)
+        T[:3, :3], T[:3, 3] = R, p
+        for o in self.objects:
+            if side in o.held:
+                rel = o.held[side]
+                L, Wd, H = o.size
+                c = np.array([[sx * L / 2, sy * Wd / 2, sz * H / 2, 1] for sx in (-1, 1) for sy in (-1, 1)
+                              for sz in (-1, 1)])
+                if np.min((T @ rel @ c.T)[2]) < 0:
+                    return True
+                continue
+            if o.held:
+                continue
+            top = max(c[2] for c in o.corners())
+            before = fingers(q_now)[0]
+            for t, b in zip(tips, before):
+                local = o.R.T @ (t - o.pos)
+                inside = abs(local[0]) < o.size[0] / 2 and abs(local[1]) < o.size[1] / 2
+                if inside and t[2] < top and b[2] >= top - 0.001:
+                    return True
+        return False
 
     def grip_stop(self, side, w_now, w_next):
         """Where a moving gripper stops (mm), or None. Closing on an object grasps it; opening lets it go."""

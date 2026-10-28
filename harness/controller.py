@@ -5,6 +5,14 @@ goal), writes the goals, and calls the tick listeners (the recorder). In the sim
 A plan is done once the joints have settled on its last goal (the servos lag a little behind).
 Torque is only switched on by arm(), which first sets every goal to where the motors are now.
 
+Gravity: every goal is written with a feed-forward offset against the arm's sag (gravity.py), and while an arm holds
+still the controller learns its compliance from the encoders, so the arms end where they're told to.
+
+Contact: in a trajectory marked contact (a touch-down), a moving arm whose measured fingertips rise CONTACT_M above the
+commanded ones, compared with where they were when the trajectory started (so a sag estimate that's still off doesn't
+count), for CONTACT_TICKS ticks is resting on something: the trajectory ends with reason "contact: <arm>" and that arm
+holds where it is.
+
 Streaming (a policy driving the arms): stream() sets a pose target per arm, and every tick the goal moves toward it by
 at most STREAM_DEG_S / STREAM_MM_S, so a jumpy policy can't jerk the arms. Trajectories and streaming exclude each
 other.
@@ -17,6 +25,8 @@ import time
 
 import numpy as np
 
+from . import gravity
+from .gravity import SagModel
 from .motion import TICK
 
 TRACK_LIMIT = 25.0  # deg
@@ -24,8 +34,14 @@ TRACK_TICKS = 25
 START_TOLERANCE = 4.0  # deg: a trajectory must start where the arm's goal is
 SETTLE_DEG = 2.0  # a plan is done when every joint is this close to its last goal
 SETTLE_TICKS = 50  # or after this long
+SETTLE_FAIL_DEG = 5.0  # still this far off by then: the arm is stuck (blocked), not slow
 TEMP_EVERY = 100  # ticks
 WARM_C, HOT_C = 55, 62
+CONTACT_M = 0.004
+CONTACT_TICKS = 3
+LEARN_AFTER = 15  # ticks an arm must hold still before its sag is learned from it
+LEARN_EVERY = 5
+LEARN_MIN_Z = 0.03  # m: only from fingertips this high (not resting on the table)
 STREAM_DEG_S = 150.0  # how fast a streamed goal may move the joints
 STREAM_MM_S = 120.0  # and the gripper
 
@@ -42,6 +58,13 @@ class Controller:
         self.goal = {s: q.copy() for s, q in self.q.items()}
         self.mode = {s: "off" for s in ios}
         self.target = {}  # streamed pose targets, while a policy drives
+        self.sag = {s: SagModel() for s in ios}
+        self.arms_k = {}  # side -> kin.Arm, for the gravity offsets (set_arms)
+        self.still = {s: 0 for s in ios}  # ticks each arm's goal hasn't changed
+        self.contact = {}  # side -> where it last touched down (tip and lowest finger heights, m), until it moves
+        self.touch = {s: 0 for s in ios}
+        self.touch_base = {}
+        self.touch_z = {}  # recent measured fingertip heights, per arm
         self.queue = []
         self.k = 0
         self.settle = 0
@@ -55,13 +78,36 @@ class Controller:
         self.running = True
         self.thread = threading.Thread(target=self._loop, daemon=True, name="control")
 
+    def set_arms(self, arms, sag_file=None):
+        """The arms' kinematics (scene.arms): turns on the gravity feed-forward and the contact watch. sag_file keeps
+        the learned sag between runs."""
+        self.arms_k = dict(arms)
+        self.sag_file = sag_file
+        if sag_file:
+            self.sag = gravity.load(sag_file, self.ios)
+        return self
+
+    def save_sag(self):
+        if getattr(self, "sag_file", None):
+            gravity.save(self.sag_file, self.sag)
+
     def start(self):
         self.thread.start()
         return self
 
+    def command(self, s, goal=None):
+        """What is written to arm s's servos for a goal: the goal plus the learned sag offset."""
+        g = self.goal[s] if goal is None else goal
+        if s not in self.arms_k:
+            return g.copy()
+        cmd = g.copy()
+        cmd[:5] += self.sag[s].offset(self.arms_k[s], g)
+        return cmd
+
     def close(self):
         self.running = False
         self.thread.join(timeout=1)
+        self.save_sag()
 
     def now(self):
         return self.t
@@ -113,6 +159,9 @@ class Controller:
                     return False, f"the plan starts {off:.0f} deg from where {s} is"
             self.queue = list(trajs)
             self.k = self.settle = 0
+            self.touch = {s: 0 for s in self.touch}
+            self.touch_base = {}
+            self.touch_z = {}
             self.reason = None
             self.idle.clear()
             for s in first.rows:
@@ -183,10 +232,20 @@ class Controller:
                     for s, rows in traj.rows.items():
                         self.goal[s] = rows[self.k].copy()
                     self.k += 1
+                    if traj.contact:
+                        self._touched(traj)
                 else:
                     self.settle += 1
                     far = max(float(np.max(np.abs(self.goal[s][:5] - self.q[s][:5]))) for s in traj.rows)
-                    if far < SETTLE_DEG or self.settle >= SETTLE_TICKS or len(self.queue) > 1:
+                    if self.settle >= SETTLE_TICKS and far > SETTLE_FAIL_DEG:
+                        stuck = max(traj.rows, key=lambda s: float(np.max(np.abs(self.goal[s][:5] - self.q[s][:5]))))
+                        self.on_event(f"{stuck} stopped {far:.0f} deg short of its goal, holding", "warn")
+                        self._abort(f"blocked: {stuck} stopped {far:.0f} deg short of its goal")
+                        for s in self.mode:
+                            if self.mode[s] != "off":
+                                self.goal[s] = self.q[s].copy()
+                                self.mode[s] = "hold"
+                    elif far < SETTLE_DEG or self.settle >= SETTLE_TICKS or len(self.queue) > 1:
                         self.queue.pop(0)
                         self.k = self.settle = 0
                         if not self.queue:
@@ -201,8 +260,9 @@ class Controller:
                     self.goal[s] = self.goal[s] + np.clip(tgt - self.goal[s], -step, step)
             for s, io in self.ios.items():
                 if self.mode[s] != "off":
-                    io.write(self.goal[s])
+                    io.write(self.command(s))
             self._reflexes()
+            self._learn_sag()
             if self.world is not None:
                 self.world.step(TICK)
                 self.t += TICK
@@ -214,6 +274,51 @@ class Controller:
             t = self.t
         for fn in self.listeners:
             fn(t, q, goal)
+
+    def _touched(self, traj):
+        """The contact watch, for the arms this trajectory moves. Ends the trajectory on contact."""
+        for s, rows in traj.rows.items():
+            if s not in self.arms_k or np.allclose(rows[0], rows[-1]):
+                continue
+            arm = self.arms_k[s]
+            z_cmd = arm.tool(self.goal[s])[0][2]
+            z_meas = arm.tool(self.q[s])[0][2]
+            base = self.touch_base.setdefault(s, z_meas - z_cmd)
+            hist = self.touch_z.setdefault(s, [])
+            hist.append(z_meas)
+            stopped = len(hist) > CONTACT_TICKS and z_meas > hist[-1 - CONTACT_TICKS] - 0.0005  # not going down
+            self.touch[s] = self.touch[s] + 1 if z_meas - z_cmd - base > CONTACT_M and stopped else 0
+            if self.touch[s] >= CONTACT_TICKS:
+                self.touch = {t: 0 for t in self.touch}
+                p, R = arm.tool(self.q[s])
+                fingers = [p + R @ arm.jaw * self.q[s][5] / 2000 * k for k in (1, -1)]
+                self.contact[s] = dict(tip=float(z_meas), finger=float(min(f[2] for f in fingers)))
+                self.goal[s] = self.q[s].copy()  # hold where it rests
+                self.goal[s][5] = rows[min(self.k, len(rows) - 1)][5]
+                self.reason = f"contact: {s}"
+                self.queue = []
+                self.idle.set()
+                for t in self.mode:
+                    if self.mode[t] == "moving":
+                        self.mode[t] = "hold"
+                return
+
+    def _learn_sag(self):
+        for s in self.ios:
+            moving = self.mode[s] in ("moving", "policy")
+            last = getattr(self, "_last_goal", {}).get(s)
+            if moving or last is None or not np.allclose(last[:5], self.goal[s][:5]):
+                self.still[s] = 0
+                if moving:
+                    self.contact.pop(s, None)
+            else:
+                self.still[s] += 1
+            if (self.mode[s] == "hold" and s in self.arms_k and s not in self.contact
+                    and self.still[s] >= LEARN_AFTER and self.still[s] % LEARN_EVERY == 0):
+                arm = self.arms_k[s]
+                if arm.tool(self.q[s])[0][2] > LEARN_MIN_Z:
+                    self.sag[s].learn(arm, self.command(s), self.q[s])
+        self._last_goal = {s: v.copy() for s, v in self.goal.items()}
 
     def _reflexes(self):
         for s in self.ios:

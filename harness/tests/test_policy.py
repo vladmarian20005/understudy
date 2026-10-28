@@ -87,10 +87,20 @@ def test_the_policy_moves_the_arms(core, monkeypatch):
 
 
 def test_an_unsafe_pose_stops_the_policy(core, monkeypatch):
+    arm = core.scene.arms["left"]
+    q = core.ctl.snapshot()["q"]["left"]
+    dive_q = None
+    for d in range(5, 90, 5):  # shoulder lift forward until the fingertips are well under the table
+        cand = q.copy()
+        cand[1] += d
+        if arm.within_limits(cand) and arm.tool(cand)[0][2] < -0.02:
+            dive_q = cand
+            break
+    assert dive_q is not None
+
     def dive(state):
         a = state.copy()
-        a[1] += 60  # left shoulder lift far forward: fingertips into the table
-        a[2] += 60
+        a[:5] = dive_q[:5]
         return a
 
     fake_policy(monkeypatch, core, dive)

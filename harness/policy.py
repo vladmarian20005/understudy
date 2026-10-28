@@ -23,7 +23,7 @@ from .recorder import CAM_KEYS, FPS, frame_images, vector
 from .scene import SIDES
 
 TASK = "Pass the brush to the other arm"
-SLACK_DEG = 1.0  # joint limits, as the planner allows
+SLACK_DEG = 3.0  # past the joint limits (which already keep a margin inside the motors' range)
 FLOOR_SLACK = 0.002  # m below the planner's fingertip floor
 GAP_FRACTION = 0.5  # of the planner's arm gap
 

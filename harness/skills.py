@@ -3,15 +3,21 @@
 Each runs as one robotd command, one at a time across both arms, and returns the same result shape (Skills.run).
 A failure raises Fail with one of the failure kinds; robotd reports it as the result's outcome, fail and why.
 Units at this boundary: cm, degrees, mm for the gripper opening. Inside: metres.
+
+Touch-down: near the table nothing trusts a computed height. A grasp goes down past the table until the fingertips
+rest on it (the controller feels it), then rises to the grasp height above where it touched; a finger that lands on
+the object's top instead is a finger_on_object failure. Setting an object down lowers it until it rests on the table,
+then opens. The arms' gravity sag is compensated in the controller; touch-down takes care of what's left.
 """
 import inspect
 import itertools
 import math
+import time
 
 import numpy as np
 
 from . import kin, perception
-from .motion import Goal, Phase, PlanError
+from .motion import Goal, Phase, PlanError, held_corners
 
 FAIL_KINDS = ("miss", "finger_on_object", "no_contact", "slip", "dropped", "unreachable", "check", "blocked",
               "manual", "torque_off", "busy", "timeout", "not_seen")
@@ -23,6 +29,13 @@ MEET_Z = 0.10  # m: where mid-air passes happen; lower and the arms crowd each o
 PULL_OUT = 0.03  # m: after letting go, the fingers slide back off the object along the approach
 TAKE_HOVER = 0.05  # m: the taker waits this far above its grasp point, then closes in
 LONG = 2.5  # length / width ratio that makes an object "long": held at an end instead of the middle
+TOUCH_BELOW = 0.015  # m: a touch-down aims this far below where contact is expected
+CARRY_CLEAR = 0.02  # m: a held object is carried with its lowest corner at least this high
+SWING_UP = 0.06  # m: how much higher it goes when a direct swing would drag it
+TOUCH_FLOOR = -0.006  # m: and never lower than this under the table
+ON_TABLE = 0.008  # m: a grasp that touches down with its lowest finger higher than this landed on the object
+LIFT_OFF = 0.005  # m: after touching the table, the lowest finger rises at least this far before closing
+HOME_SETTLE_S = 0.6
 
 
 class Fail(Exception):
@@ -83,6 +96,8 @@ class Skills:
             raise Fail(e.kind, e.why)
         ok, why = self.core.ctl.play(trajs, self.core.cancel)
         self.moved = True
+        if not ok and why.startswith("contact"):
+            raise Fail("check", f"unexpected {why}")
         if not ok:
             if why == "torque off":
                 raise Fail("torque_off", "the arms are off")
@@ -93,6 +108,39 @@ class Skills:
             if why.startswith("the plan starts"):
                 raise Fail("check", why)
             raise Stopped(why)
+
+    def touch_down(self, arm, p, speed="slow", **goal):
+        """Lower arm's fingertips toward p (m) until they rest on something. Returns where they touched, as
+        dict(tip=, finger=) heights in m (finger = the lowest finger), or None if they reached p without touching."""
+        p = np.array(p, dtype=float)
+        p[2] = max(p[2], TOUCH_FLOOR)
+
+        def plan(**extra):
+            return self.core.planner.plan(self.q(), [Phase("touch down", {arm: Goal(p=p, floor=TOUCH_FLOOR, **goal,
+                                                                                    **extra)},
+                                                           speed=speed, stop_on_contact=True)])
+
+        try:
+            try:
+                trajs = plan()
+            except PlanError as e:  # the current pitch doesn't reach that low: as steep as reaches there
+                if e.kind != "unreachable" or "pitch" in goal:
+                    raise
+                trajs = plan(pitch="steep")
+        except PlanError as e:
+            raise Fail(e.kind, e.why)
+        ok, why = self.core.ctl.play(trajs, self.core.cancel)
+        self.moved = True
+        if not ok and why == f"contact: {arm}":
+            c = self.core.ctl.contact.get(arm)
+            self.core.event(f"{arm} touched down: fingertips at {c['tip'] * 100:.1f} cm, lowest finger at "
+                            f"{c['finger'] * 100:.1f} cm")
+            return c
+        if not ok:
+            if why.startswith(("blocked", "hot", "control error")):
+                raise Stopped(why, "blocked")
+            raise Stopped(why)
+        return None
 
     def detect(self):
         dets = self.core.perception.detect()
@@ -188,24 +236,45 @@ class Skills:
             g, hover = g + shift, hover + shift
             self.play(Phase("shift", {arm: Goal(p=hover)}, speed="slow"))
         opening = self.width(arm) if width is None else width
-        self.play(Phase("down", {arm: Goal(p=g, width=opening)}, speed="slow"),
-                  Phase("close", {arm: Goal(width=0)}))
+        line = (g - hover) / (hover[2] - g[2])  # down the approach, per metre of height
+        c = self.touch_down(arm, g + line * TOUCH_BELOW, width=opening)
+        if c is not None and c["finger"] > ON_TABLE:
+            self.play(Phase("up", {arm: Goal(p=hover, pitch=r["pitch"])}))
+            raise Fail("finger_on_object", f"{arm} touched down on top of the object at {c['finger'] * 100:.1f} cm")
+        if c is not None:  # on the table: back up the approach to the grasp height, measured from where it touched
+            z = max(c["tip"] + LIFT_OFF, c["finger"] + g[2])
+            g = g - line * (z - g[2])
+            self.play(Phase("rise", {arm: Goal(p=g, pitch=r["pitch"], floor=TOUCH_FLOOR)}, speed="slow"))
+        self.play(Phase("close", {arm: Goal(width=0)}))
         w = self.width(arm)
         if w < HOLD_MIN_MM:
-            self.play(Phase("open", {arm: Goal(width=opening)}), Phase("up", {arm: Goal(p=hover)}))
+            self.play(Phase("open", {arm: Goal(width=opening)}), Phase("up", {arm: Goal(p=hover, pitch=r["pitch"])}))
             raise Fail("miss", f"{arm} closed on nothing")
         self.play(Phase("squeeze", {arm: Goal(width=max(0.0, w - SQUEEZE_MM))}))
         d = r["obj"]
         if d is not None:
             T_obj = obj_pose(np.array(d["center_cm"]) / 100, d["size_cm"][2] / 200, d["yaw"])
+            # closing fingers centre what they grip between them: the object's middle is now on the jaws' centre line
+            T = self.tool_T(arm)
+            j = T[:3, :3] @ self.scene.arms[arm].jaw
+            T_obj[:3, 3] -= j * ((T_obj[:3, 3] - T[:3, 3]) @ j)
             size = [v / 100 for v in d["size_cm"]]
             name = d["name"]
         else:
             T_obj, size, name = self.tool_T(arm), [w / 1000] * 3, "object"
         self.core.holding[arm] = dict(name=name, size=size, rel=np.linalg.inv(self.tool_T(arm)) @ T_obj,
                                       grasp_z=float(g[2]), width=w)
-        self.play(Phase("lift", {arm: Goal(p=hover)}))
+        self.lift(arm, hover, r["pitch"])
         return self.check_holding(arm, "slip")
+
+    def lift(self, arm, p, pitch):
+        """Up to p at the approach's pitch, or as steep as reaches if that's just out of reach from here."""
+        try:
+            self.play(Phase("lift", {arm: Goal(p=p, pitch=pitch)}))
+        except Fail as e:
+            if e.kind != "unreachable":
+                raise
+            self.play(Phase("lift", {arm: Goal(p=p, pitch="steep", line=False)}))
 
     def check_holding(self, arm, kind):
         w = self.width(arm)
@@ -247,11 +316,11 @@ class Skills:
         w = self.width(arm)
         opening = min(self.scene.stroke_mm, w + 30)
         tip = self.tool_T(arm, self.q()[arm])[:3, 3]
-        if set_down and h is not None:
-            low = np.array([tip[0], tip[1], h["grasp_z"] + 0.002])
-            self.play(Phase("lower", {arm: Goal(p=low)}, speed="slow"),
-                      Phase("let go", {arm: Goal(width=opening)}),
-                      Phase("up", {arm: Goal(p=[tip[0], tip[1], max(tip[2], TRAVEL_Z)])}))
+        if set_down and h is not None:  # lower until the object's low end rests on the table, then open
+            low = float(np.min(held_corners(self.tool_T(arm, self.q()[arm]), h)[:, 2]))
+            self.touch_down(arm, [tip[0], tip[1], tip[2] - low - TOUCH_BELOW])
+            self.play(Phase("let go", {arm: Goal(width=opening)}),
+                      Phase("up", {arm: Goal(p=[tip[0], tip[1], max(tip[2], TRAVEL_Z)], pitch="steep", line=False)}))
         else:
             self.play(Phase("let go", {arm: Goal(width=opening)}))
             self.pull_out(arm)
@@ -277,7 +346,16 @@ class Skills:
             q, _ = self.scene.arms[s].steepest(self.scene.home_tip(s), seed=self.q()[s][:5], lowest=0)
             goals[s] = Goal(joints=q, line=False)
         self.play(Phase("home", goals))
+        self.wait(HOME_SETTLE_S)  # holding still is when the controller learns the arms' sag
         return {}
+
+    def wait(self, seconds):
+        """Hold still for a while, on the controller's clock (simulated time in the simulator)."""
+        end = self.core.ctl.now() + seconds
+        while self.core.ctl.now() < end:
+            if self.core.cancel.is_set():
+                raise Stopped("stop requested")
+            time.sleep(0.005)
 
     def pick(self, arm, target, width=None, offset=None):
         self.reach(arm, target=target, width=width, offset=offset)
@@ -291,30 +369,50 @@ class Skills:
             raise Fail("check", "place needs xy or on")
         h = self.hold(arm)
         want = np.array(xy, dtype=float) / 100
-        q = None
         yaw_now = self.scene.arms[arm].pose(self.q()[arm])[2]
         # the jaw angle doesn't matter for setting it down: try the current one first, then others, each with the
         # wrist either way round (the held object points the other way)
         for yaw, turn in itertools.product([yaw_now + d for d in (0, 30, -30, 60, -60, 90)], ("keep", "flip")):
-            tip = want.copy()
             try:
-                for _ in range(6):  # where the fingertips go so that the object's centre lands on xy
-                    q = self.solve(arm, np.append(tip, TRAVEL_Z), yaw % 180, turn=turn)
-                    off = want - (self.tool_T(arm, np.append(q, 0.0)) @ h["rel"])[:2, 3]
-                    if np.linalg.norm(off) < 0.005:
-                        break
-                    tip = tip + off
-                else:
-                    q = None
-            except Fail:
-                q = None
-            if q is not None:
+                q, q_high = self.place_pose(arm, h, want, yaw % 180, turn)
                 break
-        if q is None:
+            except Fail:
+                continue
+        else:
             raise Fail("unreachable", f"{arm} can't put its centre at ({xy[0]:.1f}, {xy[1]:.1f}) cm")
-        self.play(Phase("move", {arm: Goal(joints=q, line=False)}))
+        # swing over high and come down onto the spot, so the object doesn't sweep low on the way; if even that
+        # would drag it, lift it straight up first
+        over = [Phase("move", {arm: Goal(joints=q_high, line=False)}), Phase("down", {arm: Goal(joints=q, line=False)})]
+        try:
+            self.play(*over)
+        except Fail as e:
+            if "would hit the table" not in e.why:
+                raise
+            p_now = self.tool_T(arm, self.q()[arm])[:3, 3]
+            self.play(Phase("up", {arm: Goal(p=p_now + [0, 0, SWING_UP], pitch="steep", line=False)}), *over)
         self.check_holding(arm, "slip")
         return self.release(arm, set_down=True)
+
+    def place_pose(self, arm, h, want, yaw, turn):
+        """Joints that hold the object with its centre over want (m), its low end CARRY_CLEAR above the table, and
+        the same SWING_UP higher, for one jaw angle and wrist turn. Raises Fail when they don't exist."""
+        def centred(z):
+            tip = want.copy()
+            for _ in range(6):  # where the fingertips go so that the object's centre lands on want
+                q = self.solve(arm, np.append(tip, z), yaw, turn=turn)
+                off = want - (self.tool_T(arm, np.append(q, 0.0)) @ h["rel"])[:2, 3]
+                if np.linalg.norm(off) < 0.005:
+                    return q
+                tip = tip + off
+            raise Fail("unreachable", "the object's centre doesn't converge on the spot")
+
+        q = centred(TRAVEL_Z)
+        # a long object held at one end hangs tilted: carry it high enough that its low end clears the table
+        low = float(np.min(held_corners(self.tool_T(arm, np.append(q, 0.0)), h)[:, 2]))
+        z = TRAVEL_Z + max(0.0, CARRY_CLEAR - low)
+        if z > TRAVEL_Z:
+            q = centred(z)
+        return q, centred(z + SWING_UP)
 
     def handover(self, giver, taker, mode="air", at=None):
         h = self.hold(giver)
@@ -368,7 +466,12 @@ class Skills:
             raise err
         self.play(Phase("meet", {giver: Goal(joints=q_g, line=False),
                                  taker: Goal(joints=q_t, width=self.scene.stroke_mm, line=False)}))
-        self.play(Phase("take", {taker: Goal(p=t_pt)}, speed="slow"), Phase("close", {taker: Goal(width=0)}))
+        c = self.touch_down(taker, t_pt)
+        if c is not None:  # a finger came down on the object instead of beside it
+            self.play(Phase("up", {taker: Goal(p=hover_t, pitch="steep")}))
+            raise Fail("finger_on_object", f"{taker} touched the object at {c['finger'] * 100:.1f} cm; {giver} "
+                       "still holds it")
+        self.play(Phase("close", {taker: Goal(width=0)}))
         w = self.width(taker)
         if w < HOLD_MIN_MM:
             self.play(Phase("open", {taker: Goal(width=self.scene.stroke_mm)}), Phase("up", {taker: Goal(p=hover_t)}))

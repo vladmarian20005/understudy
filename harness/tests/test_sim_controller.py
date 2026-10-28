@@ -17,7 +17,7 @@ def scene():
 
 
 def rig(scene, objects="blocks", speed=0):
-    world = sim.SimWorld(scene, objects)
+    world = sim.SimWorld(scene, objects, sag=False)  # the bare controller: sag has its own tests (test_sag.py)
     ctl = Controller(world.io, world, speed=speed).start()
     ctl.arm()
     return world, ctl, Planner(scene)
