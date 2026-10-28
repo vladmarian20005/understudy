@@ -175,6 +175,8 @@ class PolicyRunner:
         action = predict_action(obs, policy, device, pre, post, use_amp=False, task=r["task"],
                                 robot_type="bimanual_so101")
         r["ms"].append((time.perf_counter() - t_in) * 1000)
+        if snap is None and len(r["ms"]) == 30 and np.mean(r["ms"]) > 1000 / FPS:
+            core.event(f"policy {r['name']} takes {np.mean(r['ms']):.0f} ms a step: slower than {FPS} fps", "warn")
         a = np.asarray(action.cpu(), dtype=float).reshape(-1)
         targets = {s: np.append(a[i * 6:i * 6 + 5], a[i * 6 + 5] / 100 * core.scene.stroke_mm)
                    for i, s in enumerate(SIDES)}
