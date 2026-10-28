@@ -76,10 +76,11 @@ class Scene:
         return np.array([p[0], p[1], 0.10])
 
     def middle(self):
-        """The point on the table halfway between the bases, 22 cm forward: where handovers meet."""
+        """The point on the table halfway between the bases, 25 cm forward: where handovers meet (closer in, the taker
+        can't hover above its grasp point)."""
         f = self.forward("left") + self.forward("right")
         f /= np.linalg.norm(f)
-        return (self.base_xy("left") + self.base_xy("right")) / 2 + 0.22 * f
+        return (self.base_xy("left") + self.base_xy("right")) / 2 + 0.25 * f
 
     def on_table(self, xy, margin=0.0):
         return (self.table_x[0] + margin <= xy[0] <= self.table_x[1] - margin

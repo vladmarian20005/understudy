@@ -114,31 +114,34 @@ class Skills:
         return "right" if side == "left" else "left"
 
     # ---- grasp geometry -------------------------------------------------------------------------------------------
-    def grasp_spot(self, side, d):
-        """Where to pinch a detected object: (point m, jaw yaw, opening mm, tip height m)."""
+    def grasp_spots(self, side, d):
+        """Where to pinch a detected object, best first: (point m, jaw yaw, opening mm, tip height m). A long object
+        is held near an end, the one closer to this arm first, so the rest stays free for a pass; its middle is the
+        last resort (an end can sit too close to the base to reach)."""
         L, W, H = (v / 100 for v in d["size_cm"])
         c = np.array(d["center_cm"]) / 100
         u = np.array([math.cos(math.radians(d["yaw"])), math.sin(math.radians(d["yaw"]))])
-        point = c
-        if L >= LONG * W:  # hold a long object near the end closer to this arm, leaving the rest free
+        points = [c]
+        if L >= LONG * W:
             s = L / 2 - min(END_MARGIN, L / 4)
-            ends = [c + u * s, c - u * s]
-            point = min(ends, key=lambda e: np.linalg.norm(e - self.scene.base_xy(side)))
+            ends = sorted([c + u * s, c - u * s], key=lambda e: np.linalg.norm(e - self.scene.base_xy(side)))
+            points = ends + [c]
         z = float(np.clip(H * 0.4, 0.008, 0.03))
-        return point, (d["yaw"] + 90) % 180, min(self.scene.stroke_mm, W * 1000 + 25), z
+        return [(p, (d["yaw"] + 90) % 180, min(self.scene.stroke_mm, W * 1000 + 25), z) for p in points]
 
-    def approach(self, side, point, yaw, hover_z):
+    def approach(self, side, point, yaw, hover_z, perp=None):
         """The steepest pitch at which both the grasp point and the point hover_z above it (back along the approach)
-        are reachable. Returns (pitch, hover point)."""
+        are reachable, with the jaw line at yaw or square to perp. Returns (pitch, hover point, yaw, hover joints)."""
         arm = self.scene.arms[side]
         seed = self.q()[side][:5]
         for pitch in range(90, 29, -5):
             try:
-                q = arm.ik(point, pitch, yaw, seed=seed, restarts=1)
+                q = arm.ik(point, pitch, yaw, seed=seed, restarts=1, perp=perp)
                 a = -arm.tool(q)[1][:, 2]
+                yaw_q = arm.pose(q)[2]
                 hover = point - a * (hover_z - point[2]) / max(-a[2], 0.3)
-                arm.ik(hover, pitch, yaw, seed=q, restarts=1)
-                return float(pitch), hover
+                q_hover = arm.ik(hover, pitch, yaw_q, seed=q, restarts=1)
+                return float(pitch), hover, yaw_q, q_hover
             except kin.Unreachable:
                 continue
         raise Fail("unreachable", f"{side} can't get above ({point[0] * 100:.1f}, {point[1] * 100:.1f}) cm")
@@ -149,21 +152,28 @@ class Skills:
             d = self.resolve(target)
             if d["held_by"]:
                 raise Fail("check", f"{d['id']} is held by {d['held_by']}")
-            point, auto_yaw, opening, gz = self.grasp_spot(arm, d)
-            yaw = auto_yaw if yaw is None else yaw
-            width = opening if width is None else width
+            spots = self.grasp_spots(arm, d)
         elif xy is not None:
-            d, point, gz = None, np.array(xy, dtype=float) / 100, 0.015
-            if yaw is None:
-                yaw = self.scene.arms[arm].pose(self.q()[arm])[2]
+            d = None
+            spots = [(np.array(xy, dtype=float) / 100, self.scene.arms[arm].pose(self.q()[arm])[2], None, 0.015)]
         else:
             raise Fail("check", "reach needs a target or xy")
-        if offset:
-            point = point + np.array(offset, dtype=float) / 100
-        g = np.array([point[0], point[1], gz])
-        pitch, hover = self.approach(arm, g, yaw, z / 100)
-        self.play(Phase("reach", {arm: Goal(p=hover, pitch=pitch, yaw=yaw,
-                                            width=self.scene.stroke_mm if width is None else width, line=False)}))
+        err, want_yaw = None, yaw
+        for point, auto_yaw, opening, gz in spots:
+            if offset:
+                point = point + np.array(offset, dtype=float) / 100
+            g = np.array([point[0], point[1], gz])
+            yaw = auto_yaw if want_yaw is None else want_yaw
+            try:
+                pitch, hover, _, q_hover = self.approach(arm, g, yaw, z / 100)
+                break
+            except Fail as e:
+                err = e
+        else:
+            raise err
+        width = opening if width is None else width
+        self.play(Phase("reach", {arm: Goal(joints=q_hover, line=False,
+                                            width=self.scene.stroke_mm if width is None else width)}))
         self.reached[arm] = dict(obj=d, point=g, hover=hover, pitch=pitch, yaw=yaw)
         return {}
 
@@ -285,19 +295,45 @@ class Skills:
         toward = np.sign(self.scene.base_xy(taker)[0] - self.scene.base_xy(giver)[0])  # +1: taker on the right
         axis = np.array([toward, 0.0, 0.0])
         i_long = int(np.argmax(h["size"]))
-        along = float(np.clip(abs(np.linalg.inv(h["rel"])[i_long, 3]), 0.0, L / 2))  # grasp to centre, along it
-        g_tip = m - axis * along
-        # the giver holds the object across its jaws, so its jaw line is across the pass direction
-        q_g, pitch_g = self.scene.arms[giver].steepest(g_tip, 90.0, seed=self.q()[giver][:5])
-        T_obj = self.tool_T(giver, np.append(q_g, self.width(giver))) @ h["rel"]
-        o_axis = T_obj[:3, i_long]
-        o_axis = o_axis * np.sign(o_axis @ axis)
-        t_pt = T_obj[:3, 3] + o_axis * (L / 2 - min(END_MARGIN, L / 4))
-        t_yaw = (math.degrees(math.atan2(o_axis[1], o_axis[0])) + 90) % 180
-        pitch_t, hover_t = self.approach(taker, t_pt, t_yaw, t_pt[2] + TAKE_HOVER)
+        s_g = float(np.linalg.inv(h["rel"])[i_long, 3])  # where the giver holds it, along the object from its centre
+        s_t = -(np.sign(s_g) or 1.0) * (L / 2 - min(END_MARGIN, L / 4))  # the taker takes the other end
+        g_tip = m - axis * abs(s_t - s_g) / 2  # the two grips straddle the meeting point
+        # The giver holds it across its jaws, so its jaw line is across the pass direction. Of the wrist angles that
+        # reach the meeting point and point the free end at the taker, take the one that holds the object most level:
+        # then the taker's jaws, set across it from above, are square to it.
+        arm_g = self.scene.arms[giver]
+        yaw_meet = (math.degrees(math.atan2(axis[1], axis[0])) + 90) % 180
+
+        def taker_spot(q):
+            T = self.tool_T(giver, np.append(q, self.width(giver))) @ h["rel"]
+            return T[:3, 3] + T[:3, i_long] * s_t, T
+
+        options = []
+        for pitch in range(90, 29, -5):
+            try:
+                q = arm_g.ik(g_tip, pitch, yaw_meet, seed=self.q()[giver][:5], restarts=1)
+            except kin.Unreachable:
+                continue
+            flipped = q.copy()
+            flipped[4] += -180.0 if q[4] > 0 else 180.0
+            for qq in (q, flipped):
+                if not arm_g.within_limits(qq):
+                    continue
+                t_pt, T_obj = taker_spot(qq)
+                if (t_pt - g_tip) @ axis > 0:
+                    options.append((abs(T_obj[2, i_long]), -pitch, qq, t_pt, T_obj))
+        options.sort(key=lambda o: (round(o[0], 2), o[1]))
+        err = Fail("unreachable", f"{giver} can't hold it at the meeting point with the free end toward {taker}")
+        for _, _, q_g, t_pt, T_obj in options:
+            try:  # the taker's jaws close square to the object as it is held, tilted or not
+                _, hover_t, _, q_t = self.approach(taker, t_pt, None, t_pt[2] + TAKE_HOVER, perp=T_obj[:3, i_long])
+                break
+            except Fail as e:
+                err = e
+        else:
+            raise err
         self.play(Phase("meet", {giver: Goal(joints=q_g, line=False),
-                                 taker: Goal(p=hover_t, pitch=pitch_t, yaw=t_yaw, width=self.scene.stroke_mm,
-                                             line=False)}))
+                                 taker: Goal(joints=q_t, width=self.scene.stroke_mm, line=False)}))
         self.play(Phase("take", {taker: Goal(p=t_pt)}, speed="slow"), Phase("close", {taker: Goal(width=0)}))
         w = self.width(taker)
         if w < HOLD_MIN_MM:

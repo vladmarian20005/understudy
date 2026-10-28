@@ -160,7 +160,7 @@ class Arm:
         return np.array([F[0][:3, 3], F[1][:3, 3], F[2][:3, 3], F[3][:3, 3], F[4][:3, 3], p_tip])
 
     # ---- inverse kinematics ----------------------------------------------------------------------------------------
-    def _residual(self, qu, p, pitch, yaw):
+    def _residual(self, qu, p, pitch, yaw, perp=None):
         pt, R = self._tool_urdf(qu)
         r = list(pt - p)
         if pitch is not None:
@@ -169,44 +169,48 @@ class Arm:
             u = a[:2] / h if h > 1e-6 else np.zeros(2)
             want = np.array([u[0] * math.cos(pitch), u[1] * math.cos(pitch), -math.sin(pitch)])
             r += list(ANGLE_WEIGHT * (a - want))
-        if yaw is not None:
+        if perp is not None:
+            r.append(ANGLE_WEIGHT * float((R @ self.jaw) @ perp))
+        elif yaw is not None:
             j = R @ self.jaw
             d = math.radians(wrap90(math.degrees(math.atan2(j[1], j[0]) - yaw)))
             r.append(ANGLE_WEIGHT * d)
         return np.array(r)
 
-    def _errors(self, qu, p, pitch, yaw):
+    def _errors(self, qu, p, pitch, yaw, perp=None):
         pt, R = self._tool_urdf(qu)
         pe = float(np.linalg.norm(pt - p))
         cur_pitch, cur_yaw = self.angles(R)
         ae = 0.0
         if pitch is not None:
             ae = max(ae, abs(math.radians(cur_pitch) - pitch))
-        if yaw is not None:
+        if perp is not None:
+            ae = max(ae, abs(math.asin(min(1.0, abs(float((R @ self.jaw) @ perp))))))
+        elif yaw is not None:
             ae = max(ae, abs(math.radians(wrap90(cur_yaw - math.degrees(yaw)))))
         return pe, ae
 
-    def _solve(self, q0_deg, p, pitch, yaw, iters):
+    def _solve(self, q0_deg, p, pitch, yaw, iters, perp=None):
         lo, hi = self.to_urdf(self.limits[:, 0]), self.to_urdf(self.limits[:, 1])
         lo, hi = np.minimum(lo, hi), np.maximum(lo, hi)
         qu = np.clip(self.to_urdf(q0_deg), lo, hi)
         eps, lam = 1e-5, 0.004
         for _ in range(iters):
-            r = self._residual(qu, p, pitch, yaw)
-            pe, ae = self._errors(qu, p, pitch, yaw)
+            r = self._residual(qu, p, pitch, yaw, perp)
+            pe, ae = self._errors(qu, p, pitch, yaw, perp)
             if pe < POS_TOL and ae < ANGLE_TOL:
                 return qu, pe, ae
             J = np.empty((len(r), 5))
             for i in range(5):
                 d = np.zeros(5)
                 d[i] = eps
-                J[:, i] = (self._residual(qu + d, p, pitch, yaw) - r) / eps
+                J[:, i] = (self._residual(qu + d, p, pitch, yaw, perp) - r) / eps
             dq = J.T @ np.linalg.solve(J @ J.T + lam ** 2 * np.eye(len(r)), -r)
             n = np.linalg.norm(dq)
             if n > 0.3:
                 dq *= 0.3 / n
             qu = np.clip(qu + dq, lo, hi)
-        pe, ae = self._errors(qu, p, pitch, yaw)
+        pe, ae = self._errors(qu, p, pitch, yaw, perp)
         return qu, pe, ae
 
     def steepest(self, p, yaw=None, seed=None, lowest=30, step=5):
@@ -220,9 +224,10 @@ class Arm:
                 err = e
         raise err
 
-    def ik(self, p, pitch=None, yaw=None, seed=None, iters=80, restarts=4):
+    def ik(self, p, pitch=None, yaw=None, seed=None, iters=80, restarts=4, perp=None):
         """Joint degrees (5) that put the fingertips at p (world, m) with the given pitch and yaw (degrees, either can
-        be None = free). Tries the seed first, then a few standard postures, then random ones. Raises Unreachable."""
+        be None = free). perp, a direction, replaces yaw: the jaw line is set square to it (to close across a tilted
+        object). Tries the seed first, then a few standard postures, then random ones. Raises Unreachable."""
         p = np.asarray(p, dtype=float)
         pr = None if pitch is None else math.radians(pitch)
         yr = None if yaw is None else math.radians(yaw)
@@ -236,7 +241,8 @@ class Arm:
         seeds += [rng.uniform(self.limits[:, 0], self.limits[:, 1]) for _ in range(restarts)]
         best = None
         for s in seeds:
-            qu, pe, ae = self._solve(s, p, pr, yr, iters if best is None else iters // 2)
+            qu, pe, ae = self._solve(s, p, pr, yr, iters if best is None else iters // 2,
+                                     None if perp is None else np.asarray(perp, dtype=float))
             if best is None or pe + ANGLE_WEIGHT * ae < best[1] + ANGLE_WEIGHT * best[2]:
                 best = (qu, pe, ae)
             if pe < POS_TOL and ae < ANGLE_TOL:
