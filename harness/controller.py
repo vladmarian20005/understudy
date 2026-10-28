@@ -140,6 +140,8 @@ class Controller:
                 with self.lock:
                     self._abort(f"control error: {e!r}")
             if self.world is not None and self.speed == 0:
+                if not self.queue:
+                    time.sleep(0.002)  # idle: leave the CPU to the planner
                 continue
             next_t += TICK / (self.speed if self.world is not None else 1.0)
             delay = next_t - time.monotonic()
