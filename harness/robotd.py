@@ -48,6 +48,9 @@ class SimCameras:
                 out[n] = sim.render(self.scene, snap, sim.wrist_camera(self.scene, side, snap["q"][side]), own=side)
         return out
 
+    def health(self):
+        return {n: dict(ok=True, fps=30.0, age_s=0.0) for n in CAMERAS}
+
 
 class Core:
     def __init__(self, sim_mode=True, speed=1.0, objects="brush", noise=0.0, arm=True, quiet=False,
@@ -178,7 +181,7 @@ class Core:
             sk = dict(self.skill)
             return dict(ok=True, armed=self.ctl.armed(), busy=self.busy(), skill=sk, arms=self.arms_state(),
                         events=self.events_since(req.get("since", 0)), last_event=self.ev_id,
-                        episode=self.recorder.status() if self.recorder else None)
+                        episode=self.recorder.status() if self.recorder else None, cameras=self.cameras.health())
         if cmd == "look":
             return self.look(req.get("cams", ["overhead"]), req.get("annotate", True))
         if cmd == "detect":

@@ -16,6 +16,7 @@ import threading
 
 import numpy as np
 
+from .cameras import CameraDown
 from .kin import JOINTS
 from .scene import SIDES
 
@@ -89,7 +90,8 @@ class Recorder:
             self.ds = self._open(images)
             objects = self.core.perception.detect() if self.core.perception else []
             self.ep = dict(index=self.ds.meta.total_episodes, task=task, source=source or {"kind": "pingpong"},
-                           giver=giver, taker=taker, target_cm=target_cm, frames=0, recording=True, steps=[],
+                           giver=giver, taker=taker, target_cm=target_cm, frames=0, camera_gaps=0, recording=True,
+                           steps=[],
                            ev0=self.core.ev_id, start_objects=objects,
                            started=datetime.datetime.now().astimezone().isoformat(timespec="milliseconds"))
             self.queue = queue.Queue()
@@ -117,6 +119,9 @@ class Recorder:
             self.ds.save_episode()
             self.ds.finalize()
             self.ds = None
+            if ep["camera_gaps"]:
+                valid = False
+                note = "; ".join(filter(None, [note, f"camera drop-out: {ep['camera_gaps']} frames without new images"]))
             label = self._robot_label(ep, duration, valid, note)
             path = self._label_path(ep["index"])
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -149,13 +154,23 @@ class Recorder:
         self.queue.put((vector(q, self.core.scene.stroke_mm), vector(goal, self.core.scene.stroke_mm), snap))
 
     def _work(self):
+        last = None
         while True:
             item = self.queue.get()
             if item is None:
                 return
             state, action, snap = item
-            images = self.core.cameras.grab(list(CAM_KEYS), snap) if snap is not None else \
-                self.core.cameras.grab(list(CAM_KEYS))
+            try:
+                images = last = self.core.cameras.grab(list(CAM_KEYS), snap) if snap is not None else \
+                    self.core.cameras.grab(list(CAM_KEYS))
+            except CameraDown as e:
+                # Keep the frame timing with the last images; the episode can't be used for training.
+                if self.ep["camera_gaps"] == 0:
+                    self.core.event(f"episode {self.ep['index']}: {e}; it will be saved as invalid", "warn")
+                self.ep["camera_gaps"] += 1
+                if last is None:
+                    continue
+                images = last
             frame = {"observation.state": state, "action": action, "task": self.ep["task"]}
             for cam, img in images.items():
                 frame[f"observation.images.{CAM_KEYS[cam]}"] = img[:, :, ::-1].copy()  # BGR to RGB
@@ -200,7 +215,7 @@ class Recorder:
                 "frames": ep["frames"], "source": ep["source"],
                 "robot": dict(started=ep["started"], duration_s=round(duration, 2), giver=ep["giver"],
                               taker=ep["taker"], target_cm=ep["target_cm"], valid=bool(valid), note=note,
-                              interventions=0, steps=ep["steps"], events=events, object=obj, check=check,
+                              camera_gaps=ep["camera_gaps"], interventions=0, steps=ep["steps"], events=events, object=obj, check=check,
                               log=[dict(t=e["t"], kind=e["kind"], text=e["text"])
                                    for e in self.core.events_since(ep["ev0"])])}
 
