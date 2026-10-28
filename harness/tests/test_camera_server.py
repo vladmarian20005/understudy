@@ -207,3 +207,32 @@ def test_a_camera_drop_out_marks_the_episode_invalid(tmp_path):
         assert not robot["valid"] and robot["camera_gaps"] == 5 and "camera drop-out" in robot["note"]
     finally:
         core.close()
+
+
+def test_the_simulator_streams_its_cameras_at_the_rig_sizes():
+    from harness.robotd import Core
+
+    core = Core(sim_mode=True, speed=0, quiet=True, dataset=None)
+    pub = cameras.Publisher(lambda names: core.cameras.grab(names), fps=20, base_port=5900)
+    cams = ZmqCameras(base_port=5900)
+    try:
+        cams.wait(timeout=10)
+        imgs = cams.grab()
+        assert imgs["overhead"].shape == (480, 640, 3)
+        assert imgs["left_wrist"].shape == (768, 1024, 3)
+        assert imgs["right_wrist"].shape == (480, 640, 3)
+    finally:
+        cams.close()
+        pub.close()
+        core.close()
+
+
+def test_every_camera_is_recorded_at_640x480():
+    from harness.recorder import RECORD_SIZE, frame_images
+
+    imgs = {"overhead": np.zeros((480, 640, 3), np.uint8), "left_wrist": np.zeros((768, 1024, 3), np.uint8)}
+    imgs["left_wrist"][..., 2] = 255  # red in BGR
+    out = frame_images(imgs)
+    assert RECORD_SIZE == (640, 480)
+    assert all(v.shape == (480, 640, 3) for v in out.values())
+    assert tuple(out["observation.images.left_wrist"][0, 0]) == (255, 0, 0)  # RGB

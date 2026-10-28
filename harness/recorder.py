@@ -14,6 +14,7 @@ import queue
 import shutil
 import threading
 
+import cv2
 import numpy as np
 
 from .cameras import CameraDown
@@ -22,6 +23,9 @@ from .scene import SIDES
 
 FPS = 30
 CAM_KEYS = {"overhead": "left_overhead", "left_wrist": "left_wrist", "right_wrist": "right_wrist"}
+# Every camera is stored at this size, whatever its sensor (the left wrist is 1024x768): the same features in the
+# simulator and on the arms, and the policy runner feeds the policy exactly this.
+RECORD_SIZE = (640, 480)
 NAMES = [f"{s}_{j}.pos" for s in SIDES for j in JOINTS + ["gripper"]]
 CHECK_CM = 3.0  # robotd's own check: the object ends this close to the target, in no gripper
 REVIEW_CONFIDENCE = 0.7
@@ -31,6 +35,16 @@ DATASETS = os.path.join(os.path.dirname(HERE), "datasets")
 
 def vector(q, stroke):
     return np.concatenate([np.append(q[s][:5], q[s][5] / stroke * 100) for s in SIDES]).astype(np.float32)
+
+
+def frame_images(images):
+    """The dataset's view of camera images (BGR, any size): keyed by feature, RGB, RECORD_SIZE."""
+    out = {}
+    for cam, img in images.items():
+        if (img.shape[1], img.shape[0]) != RECORD_SIZE:
+            img = cv2.resize(img, RECORD_SIZE, interpolation=cv2.INTER_AREA)
+        out[f"observation.images.{CAM_KEYS[cam]}"] = img[:, :, ::-1].copy()
+    return out
 
 
 class Recorder:
@@ -60,9 +74,8 @@ class Recorder:
     def _features(self, images):
         f = {"observation.state": dict(dtype="float32", shape=(12,), names=NAMES),
              "action": dict(dtype="float32", shape=(12,), names=NAMES)}
-        for cam, img in images.items():
-            f[f"observation.images.{CAM_KEYS[cam]}"] = dict(dtype="video", shape=img.shape,
-                                                             names=["height", "width", "channels"])
+        for key, img in frame_images(images).items():
+            f[key] = dict(dtype="video", shape=img.shape, names=["height", "width", "channels"])
         return f
 
     def _open(self, images):
@@ -171,9 +184,7 @@ class Recorder:
                 if last is None:
                     continue
                 images = last
-            frame = {"observation.state": state, "action": action, "task": self.ep["task"]}
-            for cam, img in images.items():
-                frame[f"observation.images.{CAM_KEYS[cam]}"] = img[:, :, ::-1].copy()  # BGR to RGB
+            frame = {"observation.state": state, "action": action, "task": self.ep["task"], **frame_images(images)}
             self.ds.add_frame(frame)
             self.ep["frames"] += 1
 

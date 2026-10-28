@@ -33,6 +33,13 @@ def rig(path=RIG):
     return tuple(cfg["cameras"]), int(os.environ.get("CAMERA_PORT", cfg.get("port", 5555)))
 
 
+def sizes(path=RIG):
+    """Each camera's image size as published, (width, height), after its rotation."""
+    with open(path) as f:
+        cams = json.load(f)["cameras"]
+    return {n: tuple(c["size"]) if abs(c.get("rotate", 0)) != 90 else tuple(c["size"][::-1]) for n, c in cams.items()}
+
+
 ORDER, BASE_PORT = rig()
 
 
@@ -113,6 +120,51 @@ class ZmqCameras:
 
     def close(self):
         self.running = False
+
+
+class Publisher:
+    """Serves images in the camera server's format, on the same ports: the simulator's cameras, so a viewer or the
+    UI reads them exactly as it reads the rig's. grab(names) returns BGR images by name."""
+
+    def __init__(self, grab, fps=10.0, names=ORDER, base_port=BASE_PORT):
+        self.grab, self.fps, self.names = grab, fps, names
+        ctx = zmq.Context.instance()
+        self.socks = {}
+        try:
+            for n in names:
+                s = ctx.socket(zmq.PUB)
+                s.setsockopt(zmq.LINGER, 0)
+                s.setsockopt(zmq.SNDHWM, 2)
+                self.socks[n] = s
+                s.bind(f"tcp://127.0.0.1:{base_port + ORDER.index(n)}")
+        except zmq.ZMQError:
+            self.close()
+            raise
+        self.running = True
+        self.thread = threading.Thread(target=self._run, daemon=True, name="camera-publisher")
+        self.thread.start()
+
+    def _run(self):
+        seq = 0
+        while self.running:
+            t0 = time.monotonic()
+            try:
+                images = self.grab(list(self.names))
+            except Exception:
+                images = {}
+            seq += 1
+            for n, img in images.items():
+                ok, jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                if ok:
+                    msg = {"timestamps": {n: time.time()}, "images": {n: base64.b64encode(jpg.tobytes()).decode()},
+                           "seq": seq, "repeat": False}
+                    self.socks[n].send_string(json.dumps(msg), zmq.NOBLOCK)
+            time.sleep(max(0.0, 1.0 / self.fps - (time.monotonic() - t0)))
+
+    def close(self):
+        self.running = False
+        for s in self.socks.values():
+            s.close()
 
 
 def alive(pid):

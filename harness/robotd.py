@@ -22,6 +22,7 @@ import numpy as np
 import zmq
 
 from . import sim
+from .cameras import Publisher, sizes as camera_sizes
 from .controller import Controller
 from .motion import Planner
 from .perception import SimPerception, TablePerception
@@ -34,8 +35,11 @@ CAMERAS = ("overhead", "left_wrist", "right_wrist")
 
 
 class SimCameras:
+    """The simulator's cameras, rendered at the rig's sizes (cameras/cameras.json)."""
+
     def __init__(self, scene, world):
         self.scene, self.world = scene, world
+        self.sizes = camera_sizes()
 
     def grab(self, names=CAMERAS, snap=None):
         snap = snap or self.world.snapshot()
@@ -45,7 +49,9 @@ class SimCameras:
                 out[n] = sim.render(self.scene, snap, self.scene.camera)
             else:
                 side = n.split("_")[0]
-                out[n] = sim.render(self.scene, snap, sim.wrist_camera(self.scene, side, snap["q"][side]), own=side)
+                w, h = self.sizes.get(n, (640, 480))
+                cam = sim.wrist_camera(self.scene, side, snap["q"][side], width=w, height=h)
+                out[n] = sim.render(self.scene, snap, cam, own=side)
         return out
 
     def health(self):
@@ -54,7 +60,7 @@ class SimCameras:
 
 class Core:
     def __init__(self, sim_mode=True, speed=1.0, objects="brush", noise=0.0, arm=True, quiet=False,
-                 dataset="understudy_pass", datasets=DATASETS, vision=False):
+                 dataset="understudy_pass", datasets=DATASETS, vision=False, stream_cameras=False):
         self.scene = Scene()
         self.quiet = quiet
         self.events = collections.deque(maxlen=500)
@@ -87,12 +93,20 @@ class Core:
             self.perception = TablePerception(self.scene, self.cameras, self.ctl, self.holding)
         self.planner = Planner(self.scene)
         self.skills = Skills(self)
+        self.publisher = None
+        if sim_mode and stream_cameras:  # the simulator's cameras on the rig's ports, for viewers and the UI
+            try:
+                self.publisher = Publisher(lambda names: self.cameras.grab(names))
+            except zmq.ZMQError as e:
+                self.event(f"camera ports busy ({e}): the simulator's cameras aren't streamed", "warn")
         if dataset:
             self.recorder = Recorder(self, dataset, datasets)
         if sim_mode and arm:
             self.ctl.arm()
 
     def close(self):
+        if self.publisher is not None:
+            self.publisher.close()
         self.ctl.close()
 
     # ---- time and events ------------------------------------------------------------------------------------------
@@ -268,8 +282,11 @@ def main():
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--dataset", default="understudy_pass", help="episodes go to datasets/<name>")
     ap.add_argument("--vision", action="store_true", help="simulator: find objects in the rendered overhead image")
+    ap.add_argument("--no-camera-streams", action="store_true",
+                    help="simulator: don't publish the rendered cameras on the camera ports")
     a = ap.parse_args()
-    core = Core(a.sim, a.speed, a.objects, a.noise / 100, dataset=a.dataset, vision=a.vision)
+    core = Core(a.sim, a.speed, a.objects, a.noise / 100, dataset=a.dataset, vision=a.vision,
+                stream_cameras=not a.no_camera_streams)
     quit_event = threading.Event()
     if sys.stdin.isatty():
         threading.Thread(target=keyboard, args=(core, quit_event), daemon=True).start()
