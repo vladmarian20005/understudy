@@ -3,8 +3,9 @@
 policy_start loads a checkpoint and runs it at the dataset's 30 fps. Each step reads what the recorder stores for a
 frame (the 12 joint positions and the three cameras, RGB), asks the policy for the 12 commanded positions, and streams
 them to the controller, which moves toward them at a capped rate. Every streamed pose passes the same checks as a
-planned trajectory (joint limits, the table, the workspace, the gap between the arms); a pose that fails stops the
-policy and both arms hold. The controller's reflexes stay on, and torque still only comes on with the a key.
+planned trajectory: joints a little past their limits are clamped to them (the scripted grasps work right at the wrist
+limit, so a trained policy overshoots it by a few degrees), and a pose far past a limit, or into the table, out of the
+workspace or too close to the other arm stops the policy and both arms hold. The controller's reflexes stay on, and torque still only comes on with the a key.
 
 In the simulator the policy steps in lockstep with simulated time (from the controller's tick), so --speed 0 runs it
 flat out and the result doesn't depend on how fast the computer is. On the real arms it runs on its own thread.
@@ -18,12 +19,13 @@ import time
 import numpy as np
 
 from .cameras import CameraDown
+from .kin import JOINTS
 from .motion import ARM_FLOOR, ARM_GAP, TIP_FLOOR, Z_MAX, arms_gap
 from .recorder import CAM_KEYS, FPS, frame_images, vector
 from .scene import SIDES
 
 TASK = "Pass the brush to the other arm"
-SLACK_DEG = 3.0  # past the joint limits (which already keep a margin inside the motors' range)
+REFUSE_DEG = 15.0  # this far past a joint limit is a broken policy, not an overshoot
 FLOOR_SLACK = 0.002  # m below the planner's fingertip floor
 GAP_FRACTION = 0.5  # of the planner's arm gap
 
@@ -54,12 +56,16 @@ def load(path, device=None):
 
 
 def check_pose(scene, targets):
-    """None if both target poses are safe, else why not. Same checks as a planned trajectory, slightly looser."""
+    """None if both target poses are safe, else why not. Same checks as a planned trajectory, slightly looser.
+    Clamps joints that are a little past their limits, in place."""
     pts = {}
     for s, q in targets.items():
         arm = scene.arms[s]
-        if not arm.within_limits(q, slack=SLACK_DEG):
-            return f"{s} would pass a joint limit"
+        if not arm.within_limits(q, slack=REFUSE_DEG):
+            j = int(np.argmax(np.maximum(arm.limits[:, 0] - q[:5], q[:5] - arm.limits[:, 1])))
+            return (f"{s} {JOINTS[j]} would go to {q[j]:.0f} deg, past its limits "
+                    f"[{arm.limits[j, 0]:.0f}, {arm.limits[j, 1]:.0f}]")
+        q[:5] = np.clip(q[:5], arm.limits[:, 0], arm.limits[:, 1])
         pts[s] = arm.points(q)
         tip = pts[s][-1]
         if tip[2] < TIP_FLOOR - FLOOR_SLACK:

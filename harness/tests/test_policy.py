@@ -130,3 +130,14 @@ def test_check_pose_accepts_home_and_refuses_collisions(core):
         q, _ = core.scene.arms[s].steepest(np.array([mid[0], mid[1], 0.10]), lowest=0)
         qs[s] = np.append(q, 40.0)
     assert "of each other" in policy.check_pose(core.scene, qs)
+
+
+def test_small_overshoots_are_clamped_and_large_ones_refused(core):
+    q = {s: v.copy() for s, v in core.ctl.snapshot()["q"].items()}
+    lim = core.scene.arms["left"].limits
+    q["left"][3] = lim[3, 1] + 4  # a few degrees past the wrist limit: what a trained policy does
+    assert policy.check_pose(core.scene, q) is None
+    assert q["left"][3] == pytest.approx(lim[3, 1])
+    q["left"][4] = lim[4, 1] + 20
+    why = policy.check_pose(core.scene, q)
+    assert "left wrist_roll would go to" in why
