@@ -51,12 +51,14 @@ def test_streaming_is_rate_limited(core):
     q0 = core.ctl.snapshot()["goal"]["left"].copy()
     target = q0.copy()
     target[0] += 30
-    assert core.ctl.stream({"left": target})
-    t0 = core.ctl.now()
+    with core.ctl.lock:  # the goal and the clock read together
+        assert core.ctl.stream({"left": target})
+        t0 = core.ctl.now()
     assert wait(lambda: core.ctl.now() - t0 >= 5 * TICK)
-    moved = core.ctl.snapshot()["goal"]["left"][0] - q0[0]
-    ticks = round((core.ctl.now() - t0) / TICK)
-    assert 0 < moved <= controller.STREAM_DEG_S * TICK * (ticks + 1) + 1e-6
+    snap = core.ctl.snapshot()
+    moved = snap["goal"]["left"][0] - q0[0]
+    ticks = round((snap["t"] - t0) / TICK)
+    assert 0 < moved <= controller.STREAM_DEG_S * TICK * ticks + 1e-6
     assert wait(lambda: abs(core.ctl.snapshot()["q"]["left"][0] - target[0]) < 0.5)
     core.ctl.stop("test")
     assert core.ctl.target == {}

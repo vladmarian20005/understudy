@@ -80,10 +80,18 @@ def test_failures_name_a_kind_from_the_list(core):
     assert r["fail"] == "not_seen"
     r = skill(core, "no_such_command")
     assert r["outcome"] == "refused"
-    r = call(core, "skill", name="home", args={})
-    assert call(core, "skill", name="home", args={})["fail"] == "busy"
-    while call(core, "status")["busy"]:
-        time.sleep(0.005)
+
+
+def test_a_second_command_while_one_runs_is_busy(tmp_path):
+    c = Core(sim_mode=True, speed=1.0, quiet=True, dataset=None)  # real time: the first one is still running
+    try:
+        assert call(c, "skill", name="move_to", args=dict(arm="left", xy=[-10, 30], z=12))["ok"]
+        r = call(c, "skill", name="home", args={})
+        assert r["ok"] is False and r["fail"] == "busy"
+        while call(c, "status")["busy"]:
+            time.sleep(0.01)
+    finally:
+        c.close()
 
 
 def test_the_episode_label_file(core, tmp_path):
