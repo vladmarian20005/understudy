@@ -25,6 +25,7 @@ from . import sim
 from .controller import Controller
 from .motion import Planner
 from .perception import SimPerception
+from .recorder import DATASETS, Recorder
 from .scene import SIDES, Scene
 from .skills import Skills
 
@@ -49,7 +50,8 @@ class SimCameras:
 
 
 class Core:
-    def __init__(self, sim_mode=True, speed=1.0, objects="brush", noise=0.0, arm=True, quiet=False):
+    def __init__(self, sim_mode=True, speed=1.0, objects="brush", noise=0.0, arm=True, quiet=False,
+                 dataset="understudy_pass", datasets=DATASETS):
         self.scene = Scene()
         self.quiet = quiet
         self.events = collections.deque(maxlen=500)
@@ -79,6 +81,8 @@ class Core:
         self.ctl = Controller(ios, self.world, speed, on_event=self.event).start()
         self.planner = Planner(self.scene)
         self.skills = Skills(self)
+        if dataset:
+            self.recorder = Recorder(self, dataset, datasets)
         if sim_mode and arm:
             self.ctl.arm()
 
@@ -142,6 +146,8 @@ class Core:
                 res = dict(op=name, outcome="failed", fail=None, why=f"internal error: {e!r}",
                            arms=self.arms_state(), events=[])
                 self.event(f"{name} crashed: {e!r}", "error")
+            if self.recorder is not None:
+                self.recorder.on_step(res)
             self.skill.update(running=False, result=res)
 
         threading.Thread(target=go, daemon=True, name=f"skill-{name}").start()
@@ -254,8 +260,9 @@ def main():
     ap.add_argument("--objects", default="brush", help=f"simulator scene: {', '.join(sim.SCENES)}")
     ap.add_argument("--noise", type=float, default=0.0, help="simulated perception error, cm")
     ap.add_argument("--port", type=int, default=PORT)
+    ap.add_argument("--dataset", default="understudy_pass", help="episodes go to datasets/<name>")
     a = ap.parse_args()
-    core = Core(a.sim, a.speed, a.objects, a.noise / 100)
+    core = Core(a.sim, a.speed, a.objects, a.noise / 100, dataset=a.dataset)
     quit_event = threading.Event()
     if sys.stdin.isatty():
         threading.Thread(target=keyboard, args=(core, quit_event), daemon=True).start()

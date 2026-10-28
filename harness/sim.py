@@ -135,7 +135,7 @@ class SimWorld:
         bottom = min(c[2] for c in o.corners())
         fingers_low, fingers_high = sorted([p[2], (p - a * FINGER_LEN)[2]])
         overlap = min(fingers_high, top) - max(fingers_low, bottom)
-        inside = abs(along_j) + e_j / 2 <= w / 2000 + 0.004 and abs(along_k) <= e_k / 2 + PAD
+        inside = abs(along_j) < w / 2000 and e_j <= w / 1000 + 0.002 and abs(along_k) <= e_k / 2 + PAD
         return inside and overlap >= MIN_OVERLAP and top - fingers_low >= MIN_OVERLAP, along_j, e_j
 
     def grip_stop(self, side, w_now, w_next):
