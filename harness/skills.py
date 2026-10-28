@@ -382,7 +382,9 @@ class Skills:
             raise Fail("unreachable", f"{arm} can't put its centre at ({xy[0]:.1f}, {xy[1]:.1f}) cm")
         # swing over high and come down onto the spot, so the object doesn't sweep low on the way; if even that
         # would drag it, lift it straight up first
-        over = [Phase("move", {arm: Goal(joints=q_high, line=False)}), Phase("down", {arm: Goal(joints=q, line=False)})]
+        over = [Phase("move", {arm: Goal(joints=q_high, line=False)})]
+        if q_high is not q:
+            over.append(Phase("down", {arm: Goal(joints=q, line=False)}))
         try:
             self.play(*over)
         except Fail as e:
@@ -394,8 +396,9 @@ class Skills:
         return self.release(arm, set_down=True)
 
     def place_pose(self, arm, h, want, yaw, turn):
-        """Joints that hold the object with its centre over want (m), its low end CARRY_CLEAR above the table, and
-        the same SWING_UP higher, for one jaw angle and wrist turn. Raises Fail when they don't exist."""
+        """Joints that hold the object with its centre over want (m) and its low end CARRY_CLEAR above the table,
+        and the highest of SWING_UP, half that or the same pose to swing over in, for one jaw angle and wrist turn.
+        Raises Fail when they don't exist."""
         def centred(z):
             tip = want.copy()
             for _ in range(6):  # where the fingertips go so that the object's centre lands on want
@@ -412,7 +415,12 @@ class Skills:
         z = TRAVEL_Z + max(0.0, CARRY_CLEAR - low)
         if z > TRAVEL_Z:
             q = centred(z)
-        return q, centred(z + SWING_UP)
+        for up in (SWING_UP, SWING_UP / 2):  # close in front of the base, high poses don't reach
+            try:
+                return q, centred(z + up)
+            except Fail:
+                pass
+        return q, q
 
     def handover(self, giver, taker, mode="air", at=None):
         h = self.hold(giver)
