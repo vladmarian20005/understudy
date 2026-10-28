@@ -112,11 +112,11 @@ class FakeBus:
         self.pos = {"shoulder_pan": 1.0, "shoulder_lift": 2.0, "elbow_flex": 3.0, "wrist_flex": 4.0,
                     "wrist_roll": 5.0, "gripper": 50.0}
 
-    def sync_read(self, name, normalize=True):
+    def sync_read(self, name, normalize=True, num_retry=0):
         self.calls.append(("read", name))
         return dict(self.pos) if name == "Present_Position" else {k: 30 for k in self.pos}
 
-    def sync_write(self, name, values):
+    def sync_write(self, name, values, num_retry=0):
         self.calls.append(("sync_write", name, dict(values)))
 
     def write(self, name, motor, value):

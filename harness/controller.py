@@ -17,6 +17,10 @@ Streaming (a policy driving the arms): stream() sets a pose target per arm, and 
 at most STREAM_DEG_S / STREAM_MM_S, so a jumpy policy can't jerk the arms. Trajectories and streaming exclude each
 other.
 
+Bus drop-outs: a read or write that fails (after the driver's retries) is skipped, the arm keeps its last reading and
+its servos hold their last goal. BUS_STOP_TICKS failures in a row stop the motion (reason "blocked: bus ..."), and
+bus_faults counts those stops for the recorder; BUS_LOST_TICKS in a row is reported as a lost bus.
+
 Reflexes: a joint more than TRACK_LIMIT degrees behind its goal for TRACK_TICKS ticks stops everything (something
 blocks the arm); a servo hotter than HOT_C stops everything too.
 """
@@ -37,6 +41,8 @@ SETTLE_TICKS = 50  # or after this long
 SETTLE_FAIL_DEG = 5.0  # still this far off by then: the arm is stuck (blocked), not slow
 TEMP_EVERY = 100  # ticks
 WARM_C, HOT_C = 55, 62
+BUS_STOP_TICKS = 5
+BUS_LOST_TICKS = 100
 CONTACT_M = 0.004
 CONTACT_TICKS = 3
 LEARN_AFTER = 15  # ticks an arm must hold still before its sag is learned from it
@@ -65,6 +71,8 @@ class Controller:
         self.touch = {s: 0 for s in ios}
         self.touch_base = {}
         self.touch_z = {}  # recent measured fingertip heights, per arm
+        self.bus_errors = {}  # (arm, call) -> failures in a row: reads, writes and temperatures count apart
+        self.bus_faults = 0  # motions stopped by a bus drop-out
         self.queue = []
         self.k = 0
         self.settle = 0
@@ -221,10 +229,36 @@ class Controller:
             else:
                 next_t = time.monotonic()
 
+    def _bus(self, s, fn, *args):
+        """One bus call for arm s; counts failures in a row and stops motion when they persist."""
+        key = (s, fn.__name__)
+        try:
+            out = fn(*args)
+        except Exception as e:
+            n = self.bus_errors[key] = self.bus_errors.get(key, 0) + 1
+            if n == BUS_STOP_TICKS:
+                self.bus_faults += 1
+                self.on_event(f"{s} bus not answering ({e}): stopped, holding", "warn")
+                self._abort(f"blocked: bus: {s} not answering")
+                self.target = {}
+                for t in self.ios:
+                    if self.mode[t] != "off":
+                        self.goal[t] = self.q[t].copy()
+                        self.mode[t] = "hold"
+            elif n == BUS_LOST_TICKS:
+                self.on_event(f"{s} bus lost for {n * TICK:.0f} s: check its USB cable and power", "error")
+            return None
+        if self.bus_errors.get(key, 0) >= BUS_STOP_TICKS:
+            self.on_event(f"{s} bus answering again")
+        self.bus_errors[key] = 0
+        return out
+
     def _tick(self):
         with self.lock:
             for s, io in self.ios.items():
-                self.q[s] = io.read()
+                q = self._bus(s, io.read)
+                if q is not None:
+                    self.q[s] = q
             if self.queue:
                 traj = self.queue[0]
                 n = len(next(iter(traj.rows.values())))
@@ -260,7 +294,7 @@ class Controller:
                     self.goal[s] = self.goal[s] + np.clip(tgt - self.goal[s], -step, step)
             for s, io in self.ios.items():
                 if self.mode[s] != "off":
-                    io.write(self.command(s))
+                    self._bus(s, io.write, self.command(s))
             self._reflexes()
             self._learn_sag()
             if self.world is not None:
@@ -337,7 +371,9 @@ class Controller:
                         self.mode[t] = "hold"
         if self.ticks % TEMP_EVERY == 0:
             for s, io in self.ios.items():
-                temps = io.temperatures()
+                temps = self._bus(s, io.temperatures)
+                if temps is None:
+                    continue
                 self.temps[s] = temps
                 hot = max(temps)
                 if hot >= HOT_C and (self.queue or self.target):

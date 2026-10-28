@@ -13,6 +13,7 @@ from .kin import CALIB_DIR, JOINTS
 
 GRIPPER_TORQUE = dict(Max_Torque_Limit=700, Protection_Current=350, Overload_Torque=40)  # lerobot's 500/250/25 slip
 P_GAIN, D_GAIN = 16, 32
+RETRIES = 2  # a garbled status packet is retried before it counts as a failed read
 
 
 class CalibrationMismatch(Exception):
@@ -41,13 +42,13 @@ class BusArmIO:
         self.bus = bus
 
     def read(self):
-        pos = self.bus.sync_read("Present_Position")
+        pos = self.bus.sync_read("Present_Position", num_retry=RETRIES)
         return np.array([pos[j] for j in JOINTS] + [pos["gripper"] / 100 * self.stroke], dtype=float)
 
     def write(self, goal):
         g = {j: float(goal[i]) for i, j in enumerate(JOINTS)}
         g["gripper"] = float(np.clip(goal[5] / self.stroke * 100, 0, 100))
-        self.bus.sync_write("Goal_Position", g)
+        self.bus.sync_write("Goal_Position", g, num_retry=RETRIES)
 
     def torque(self, on):
         if not on:
@@ -69,7 +70,7 @@ class BusArmIO:
         self.bus.enable_torque()
 
     def temperatures(self):
-        t = self.bus.sync_read("Present_Temperature", normalize=False)
+        t = self.bus.sync_read("Present_Temperature", normalize=False, num_retry=RETRIES)
         return [float(t[m]) for m in self.names]
 
     def close(self, torque_off=True):

@@ -104,7 +104,7 @@ class Recorder:
             objects = self.core.perception.detect() if self.core.perception else []
             self.ep = dict(index=self.ds.meta.total_episodes, task=task, source=source or {"kind": "pingpong"},
                            giver=giver, taker=taker, target_cm=target_cm, frames=0, camera_gaps=0, recording=True,
-                           steps=[],
+                           steps=[], bus0=self.core.ctl.bus_faults,
                            ev0=self.core.ev_id, start_objects=objects,
                            started=datetime.datetime.now().astimezone().isoformat(timespec="milliseconds"))
             self.queue = queue.Queue()
@@ -135,6 +135,10 @@ class Recorder:
             if ep["camera_gaps"]:
                 valid = False
                 note = "; ".join(filter(None, [note, f"camera drop-out: {ep['camera_gaps']} frames without new images"]))
+            ep["bus_faults"] = self.core.ctl.bus_faults - ep["bus0"]
+            if ep["bus_faults"]:
+                valid = False
+                note = "; ".join(filter(None, [note, f"bus drop-out: {ep['bus_faults']} motion(s) stopped"]))
             label = self._robot_label(ep, duration, valid, note)
             path = self._label_path(ep["index"])
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -226,7 +230,7 @@ class Recorder:
                 "frames": ep["frames"], "source": ep["source"],
                 "robot": dict(started=ep["started"], duration_s=round(duration, 2), giver=ep["giver"],
                               taker=ep["taker"], target_cm=ep["target_cm"], valid=bool(valid), note=note,
-                              camera_gaps=ep["camera_gaps"], interventions=0, steps=ep["steps"], events=events, object=obj, check=check,
+                              camera_gaps=ep["camera_gaps"], bus_faults=ep.get("bus_faults", 0), interventions=0, steps=ep["steps"], events=events, object=obj, check=check,
                               log=[dict(t=e["t"], kind=e["kind"], text=e["text"])
                                    for e in self.core.events_since(ep["ev0"])])}
 
