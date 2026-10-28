@@ -114,6 +114,19 @@ class Arm:
     def to_deg(self, q_urdf):
         return np.degrees(np.asarray(q_urdf, dtype=float) * self.signs - self.offsets)
 
+    def canonical_roll(self, q_deg):
+        """The same pose with the wrist roll in (-90, 90] where the joint allows. Half a turn of the roll leaves the
+        fingertip point and the jaw line where they are, so for the symmetric parallel gripper both are the same grasp;
+        picking one every time keeps the demonstrations consistent (a policy averaging two rolls 180 deg apart lands
+        on neither)."""
+        q = np.asarray(q_deg, dtype=float).copy()
+        if q[4] > 90 or q[4] <= -90:
+            alt = q.copy()
+            alt[4] += -180.0 if q[4] > 90 else 180.0
+            if self.within_limits(alt):
+                return alt
+        return q
+
     def within_limits(self, q_deg, slack=0.0):
         q = np.asarray(q_deg, dtype=float)[:5]
         return bool(np.all(q >= self.limits[:, 0] - slack) and np.all(q <= self.limits[:, 1] + slack))

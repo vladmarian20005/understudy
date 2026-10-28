@@ -90,3 +90,15 @@ def test_table_frame_matches_the_image(scene):
     px = scene.camera.project([[0, 0.2, 0], [0.1, 0.2, 0], [0, 0.3, 0]])
     assert px[1, 0] > px[0, 0] and px[2, 1] < px[0, 1]
     assert math.isclose(scene.arms["left"].base[0, 3], -scene.arms["right"].base[0, 3], abs_tol=0.01)
+
+
+def test_half_a_turn_of_the_wrist_is_the_same_grasp():
+    from harness.scene import Scene
+
+    arm = Scene().arms["left"]
+    q = np.array([10.0, -20.0, 15.0, 70.0, 120.0])
+    c = arm.canonical_roll(q)
+    assert -90 < c[4] <= 90 and c[4] == pytest.approx(-60)
+    p1, pitch1, yaw1 = arm.pose(q)
+    p2, pitch2, yaw2 = arm.pose(c)
+    assert np.allclose(p1, p2) and pitch1 == pytest.approx(pitch2) and yaw1 == pytest.approx(yaw2)

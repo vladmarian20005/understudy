@@ -191,7 +191,7 @@ class Skills:
                 a = -arm.tool(q)[1][:, 2]
                 yaw_q = arm.pose(q)[2]
                 hover = point - a * (hover_z - point[2]) / max(-a[2], 0.3)
-                q_hover = arm.ik(hover, pitch, yaw_q, seed=q, restarts=1)
+                q_hover = arm.canonical_roll(arm.ik(hover, pitch, yaw_q, seed=q, restarts=1))
                 return float(pitch), hover, yaw_q, q_hover
             except kin.Unreachable:
                 continue
@@ -345,9 +345,9 @@ class Skills:
         """Park the arms; width (mm) also sets the grippers' opening."""
         arms = [arms] if isinstance(arms, str) else list(arms)
         goals = {}
-        for s in arms:
-            q, _ = self.scene.arms[s].steepest(self.scene.home_tip(s), seed=self.q()[s][:5], lowest=0)
-            goals[s] = Goal(joints=q, line=False, width=width)
+        for s in arms:  # the same home pose every time, wrist included: every episode starts alike
+            q, _ = self.scene.arms[s].steepest(self.scene.home_tip(s), lowest=0)
+            goals[s] = Goal(joints=self.scene.arms[s].canonical_roll(q), line=False, width=width)
         self.play(Phase("home", goals))
         self.wait(HOME_SETTLE_S)  # holding still is when the controller learns the arms' sag
         return {}
