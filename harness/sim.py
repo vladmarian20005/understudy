@@ -9,6 +9,9 @@ It plays the same role as the servo buses and the camera server. robotd runs on 
   An object whose jaws open falls flat on the table, unless the other gripper still holds it.
 - Cameras are drawn with OpenCV from the same camera model as the real overhead camera, so pixels and table cm match
   the real setup.
+- Faults on demand (faults={"miss": p, ...}), so a brain's recovery can be tried before the real arms fail:
+  miss = a closing gripper misses the object (per grasp), slip = a held object falls (per second carried),
+  camera = a camera drops out for CAMERA_OUTAGE_S (per second), bus = a servo read fails (per read).
 """
 import math
 from dataclasses import dataclass, field
@@ -26,6 +29,8 @@ PAD = 0.012  # m: half the finger pad's width
 MIN_OVERLAP = 0.003  # m: the fingers must reach this far below an object's top to hold it
 # deg per unit gravity torque (gravity.torque), per joint: the real arms sag 1-1.5 cm at the fingertips when extended
 SAG_COMPLIANCE = (0.0, 1200.0, 1300.0, 900.0, 0.0)
+FAULTS = ("miss", "slip", "camera", "bus")
+CAMERA_OUTAGE_S = 1.5
 
 # name, size L x W x H (m), colour (BGR), centre x, y (m), yaw (deg)
 SCENES = {
@@ -81,6 +86,8 @@ class SimArmIO:
         self.blocked = False  # the arm is pressing on the table or an object
 
     def read(self):
+        if self.torque_on and self.world.fault("bus"):
+            raise IOError(f"{self.side}: no status packet (simulated bus fault)")
         return self.q.copy()
 
     def write(self, goal):
@@ -111,9 +118,17 @@ class SimArmIO:
 
 
 class SimWorld:
-    def __init__(self, scene, objects="brush", noise=0.0, seed=0, sag=True):
+    def __init__(self, scene, objects="brush", noise=0.0, seed=0, sag=True, faults=None):
         self.scene = scene
         self.sag = np.array(SAG_COMPLIANCE) if sag else np.zeros(5)
+        self.faults = dict(faults or {})
+        unknown = set(self.faults) - set(FAULTS)
+        if unknown:
+            raise ValueError(f"unknown faults {', '.join(sorted(unknown))}: there are {', '.join(FAULTS)}")
+        self.fault_rng = np.random.default_rng(seed + 1)
+        self.on_fault = lambda kind, what: None
+        self.t = 0.0
+        self.camera_down_until = {}
         self.rng = np.random.default_rng(seed)
         self.noise = noise  # m: error added to what perception reports
         self.objects = []
@@ -186,6 +201,34 @@ class SimWorld:
                     return True
         return False
 
+    def fault(self, kind, dt=None, what=None):
+        """Whether a simulated fault of this kind happens now: per event, or per second when dt is given."""
+        p = self.faults.get(kind, 0.0)
+        if p <= 0:
+            return False
+        hit = self.fault_rng.random() < (p * dt if dt is not None else p)
+        if hit:
+            self.on_fault(kind, what or kind)
+        return hit
+
+    def camera_down(self, name, dt):
+        """Whether a camera is in a simulated drop-out (starting one at the camera fault rate)."""
+        if self.t < self.camera_down_until.get(name, -1.0):
+            return True
+        if self.fault("camera", dt, f"{name} dropped out for {CAMERA_OUTAGE_S:.1f} s"):
+            self.camera_down_until[name] = self.t + CAMERA_OUTAGE_S
+            return True
+        return False
+
+    def place(self, name, xy, yaw=None):
+        """Put an object (not held) somewhere on the table: for setting up a test."""
+        o = next((o for o in self.objects if o.name == name), None)
+        if o is None or o.held:
+            raise ValueError(f"no free object {name!r}")
+        o.yaw = o.yaw if yaw is None else float(yaw)
+        o.R = rot_z(o.yaw)
+        o.pos = np.array([xy[0], xy[1], o.size[2] / 2])
+
     def grip_stop(self, side, w_now, w_next):
         """Where a moving gripper stops (mm), or None. Closing on an object grasps it; opening lets it go."""
         for o in self.objects:
@@ -200,6 +243,8 @@ class SimWorld:
         for o in self.objects:
             ok, along_j, e_j = self._between(side, o, w_now)
             if ok and w_next <= e_j * 1000 <= w_now:
+                if self.fault("miss", what=f"{side} missed the {o.name}"):
+                    return None
                 p, j, a, T = self.tool(side)
                 if not o.held:
                     o.pos = o.pos - j * along_j  # the fingers centre it as they close
@@ -217,9 +262,13 @@ class SimWorld:
             o.pos = np.array([o.pos[0], o.pos[1], o.size[2] / 2])
 
     def step(self, dt):
+        self.t += dt
         for io in self.io.values():
             io.step(dt)
         for o in self.objects:
+            if len(o.held) == 1 and self.fault("slip", dt, f"the {o.name} slipped out of {next(iter(o.held))}"):
+                self.release(next(iter(o.held)), o)
+                continue
             if o.held:
                 side = next(iter(o.held))
                 T = self.tool(side)[3] @ o.held[side]

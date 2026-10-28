@@ -22,7 +22,7 @@ import numpy as np
 import zmq
 
 from . import sim
-from .cameras import Publisher, sizes as camera_sizes
+from .cameras import CameraDown, Publisher, sizes as camera_sizes
 from .controller import Controller
 from .motion import Planner
 from .perception import SimPerception, TablePerception
@@ -42,10 +42,19 @@ class SimCameras:
     def __init__(self, scene, world):
         self.scene, self.world = scene, world
         self.sizes = camera_sizes()
+        self.last_t = {}
 
     def grab(self, names=CAMERAS, snap=None):
         snap = snap or self.world.snapshot()
         out = {}
+        down = []
+        for n in names:  # every camera's fault clock moves on, even when another one is down
+            dt = self.world.t - self.last_t.get(n, self.world.t)
+            self.last_t[n] = self.world.t
+            if self.world.camera_down(n, dt):
+                down.append(n)
+        if down:
+            raise CameraDown(f"{', '.join(down)}: no frame (simulated drop-out)")
         for n in names:
             if n == "overhead":
                 out[n] = sim.render(self.scene, snap, self.scene.camera)
@@ -62,13 +71,15 @@ class SimCameras:
 
 class Core:
     def __init__(self, sim_mode=True, speed=1.0, objects="brush", noise=0.0, arm=True, quiet=False,
-                 dataset="understudy_pass", datasets=DATASETS, vision=False, stream_cameras=False, sag=True):
+                 dataset="understudy_pass", datasets=DATASETS, vision=False, stream_cameras=False, sag=True,
+                 faults=None):
         self.scene = Scene()
         self.quiet = quiet
         self.events = collections.deque(maxlen=500)
         self.ev_id = 0
         self.ev_lock = threading.Lock()
         self.holding = {s: None for s in SIDES}
+        self.interventions = 0  # times Vlad took over an arm (leader takeover, when it's built)
         self.last_objects = []
         self.cancel = threading.Event()
         self.skill = {}
@@ -77,7 +88,8 @@ class Core:
         self.recorder = None
         self.sim = sim_mode
         if sim_mode:
-            self.world = sim.SimWorld(self.scene, objects, noise, sag=sag)
+            self.world = sim.SimWorld(self.scene, objects, noise, sag=sag, faults=faults)
+            self.world.on_fault = lambda kind, what: self.event(f"simulated fault: {what}", "warn")
             ios = self.world.io
             self.cameras = SimCameras(self.scene, self.world)
             self.perception = SimPerception(self.world, self.scene)
@@ -202,10 +214,11 @@ class Core:
         cmd = req.get("cmd")
         if cmd == "status":
             sk = dict(self.skill)
-            return dict(ok=True, armed=self.ctl.armed(), busy=self.busy(), skill=sk, arms=self.arms_state(),
+            mode = "policy" if self.policy.active() else "skill" if self.busy() else "idle"
+            return dict(ok=True, mode=mode, armed=self.ctl.armed(), busy=self.busy(), skill=sk, arms=self.arms_state(),
                         events=self.events_since(req.get("since", 0)), last_event=self.ev_id,
                         episode=self.recorder.status() if self.recorder else None, cameras=self.cameras.health(),
-                        policy=self.policy.status())
+                        policy=self.policy.status(), interventions=self.interventions, sim=self.sim)
         if cmd == "look":
             return self.look(req.get("cams", ["overhead"]), req.get("annotate", True))
         if cmd == "detect":
@@ -239,7 +252,25 @@ def to_json(o):
     raise TypeError(f"can't send {type(o).__name__}")
 
 
-def serve(core, port=PORT, stop_event=None):
+class Trace:
+    """Every request and reply as JSON lines, for replaying real-arm sessions in tests. status is kept at most once
+    a second (clients poll it every 50 ms)."""
+
+    def __init__(self, path):
+        self.f = open(path, "a")
+        self.last_status = 0.0
+
+    def write(self, req, rep):
+        now = time.time()
+        if req.get("cmd") == "status":
+            if now - self.last_status < 1.0:
+                return
+            self.last_status = now
+        self.f.write(json.dumps({"t": round(now, 3), "req": req, "rep": rep}, default=to_json) + "\n")
+        self.f.flush()
+
+
+def serve(core, port=PORT, stop_event=None, trace=None):
     ctx = zmq.Context.instance()
     sock = ctx.socket(zmq.REP)
     sock.setsockopt(zmq.LINGER, 0)
@@ -256,6 +287,8 @@ def serve(core, port=PORT, stop_event=None):
             except Exception as e:
                 rep = dict(ok=False, errors=[f"{type(e).__name__}: {e}"])
             sock.send_string(json.dumps(rep, default=to_json))
+            if trace is not None:
+                trace.write(json.loads(msg), rep)
     finally:
         sock.close()
 
@@ -303,15 +336,20 @@ def main():
     ap.add_argument("--no-camera-streams", action="store_true",
                     help="simulator: don't publish the rendered cameras on the camera ports")
     ap.add_argument("--no-sag", action="store_true", help="simulator: servos that don't sag under gravity")
+    ap.add_argument("--faults", default="", metavar="KIND=P,...",
+                    help=f"simulator: fault probabilities, kinds {', '.join(sim.FAULTS)} (e.g. miss=0.1,slip=0.02)")
+    ap.add_argument("--trace", metavar="FILE", help="append every request and reply to FILE as JSON lines")
     a = ap.parse_args()
+    faults = {k: float(v) for k, v in (f.split("=") for f in a.faults.split(",") if f)}
     core = Core(a.sim, a.speed, a.objects, a.noise / 100, dataset=a.dataset, vision=a.vision,
-                stream_cameras=not a.no_camera_streams, sag=not a.no_sag)
+                stream_cameras=not a.no_camera_streams, sag=not a.no_sag, faults=faults)
     quit_event = threading.Event()
     if sys.stdin.isatty():
         threading.Thread(target=keyboard, args=(core, quit_event), daemon=True).start()
     print(f"[robotd] {'simulator' if a.sim else 'real arms'} on tcp://127.0.0.1:{a.port}"
           + ("" if core.ctl.armed() else ": press a to switch torque on"), flush=True)
-    server = threading.Thread(target=serve, args=(core, a.port, quit_event), daemon=True)
+    trace = Trace(a.trace) if a.trace else None
+    server = threading.Thread(target=serve, args=(core, a.port, quit_event, trace), daemon=True)
     server.start()
     try:
         quit_event.wait()

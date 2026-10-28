@@ -3,6 +3,7 @@
 #   ./understudy.sh --sim [robotd args]    robotd on the simulator: no arms, no cameras
 #   ./understudy.sh [robotd args]          the cameras, then robotd on the real arms (press a for torque)
 #   ./understudy.sh cameras [--view]       the cameras only, checked, and shown with --view; Ctrl+C stops them
+#   ./understudy.sh check                  preflight: is everything ready for a session (robotd running)?
 # FAKE_CAMERAS=1 serves test patterns instead of the cameras. USE_CAMERAS=overhead,left_wrist runs a subset.
 # First time on a Mac: cameras/setup.sh (the camera venv, and starting the cameras without the password).
 set -eo pipefail
@@ -14,6 +15,9 @@ source cameras/serve.sh
 case "${1:-}" in
   --sim)
     exec python -m harness.robotd "$@"
+    ;;
+  check)
+    exec python -m harness.preflight
     ;;
   cameras)
     start_cameras
