@@ -4,6 +4,8 @@
 #   ./understudy.sh [robotd args]          the cameras, then robotd on the real arms (press a for torque)
 #   ./understudy.sh cameras [--view]       the cameras only, checked, and shown with --view; Ctrl+C stops them
 #   ./understudy.sh check                  preflight: is everything ready for a session (robotd running)?
+# BRAIN="<command>" and UI="<command>" start next to robotd once it answers (e.g. BRAIN="python -m brain"), with
+# their output in logs/brain.log and logs/ui.log and the settings in .env; they stop when robotd does.
 # FAKE_CAMERAS=1 serves test patterns instead of the cameras. USE_CAMERAS=overhead,left_wrist runs a subset.
 # First time on a Mac: cameras/setup.sh (the camera venv, and starting the cameras without the password).
 set -eo pipefail
@@ -12,9 +14,40 @@ source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate lerobot
 source cameras/serve.sh
 
+SIDECARS=()
+
+start_sidecar() {  # name, command: runs once robotd answers, in the background
+  mkdir -p logs
+  (
+    until python -c "from harness import robot; robot.status()" > /dev/null 2>&1; do sleep 0.5; done
+    exec bash -c "$2"
+  ) > "logs/$1.log" 2>&1 &
+  SIDECARS+=("$!")
+  echo "$1 starts once robotd answers (log: logs/$1.log)"
+}
+
+stop_sidecars() {
+  for pid in "${SIDECARS[@]}"; do
+    pkill -P "${pid}" 2> /dev/null || true
+    kill "${pid}" 2> /dev/null || true
+  done
+}
+
+start_sidecars() {
+  if [ -f .env ]; then
+    set -a
+    source .env
+    set +a
+  fi
+  [ -n "${BRAIN}" ] && start_sidecar brain "${BRAIN}"
+  [ -n "${UI}" ] && start_sidecar ui "${UI}"
+  trap 'stop_sidecars; stop_cameras' EXIT
+}
+
 case "${1:-}" in
   --sim)
-    exec python -m harness.robotd "$@"
+    start_sidecars
+    python -m harness.robotd "$@"
     ;;
   check)
     exec python -m harness.preflight
@@ -30,6 +63,7 @@ case "${1:-}" in
     ;;
   *)
     start_cameras
+    start_sidecars
     python -m harness.robotd "$@"
     ;;
 esac
