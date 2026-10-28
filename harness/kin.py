@@ -123,7 +123,7 @@ class Arm:
         if q[4] > 90 or q[4] <= -90:
             alt = q.copy()
             alt[4] += -180.0 if q[4] > 90 else 180.0
-            if self.within_limits(alt):
+            if self.limits[4, 0] <= alt[4] <= self.limits[4, 1]:  # only the roll changes
                 return alt
         return q
 
