@@ -5,6 +5,7 @@ A failure raises Fail with one of the failure kinds; robotd reports it as the re
 Units at this boundary: cm, degrees, mm for the gripper opening. Inside: metres.
 """
 import inspect
+import itertools
 import math
 
 import numpy as np
@@ -213,9 +214,30 @@ class Skills:
             raise Fail(kind, f"{arm} lost the object")
         return {"width_mm": round(w, 1)}
 
+    def solve(self, arm, p, yaw=None, pitch=None, turn=None):
+        """Joints for the fingertips at p (m), steepest pitch unless given. The same jaw line half a turn of the wrist
+        round flips a held object end for end: turn="keep" keeps the wrist's turn, "flip" turns it round, None keeps
+        it where the joint allows."""
+        arm_k = self.scene.arms[arm]
+        q_now = self.q()[arm][:5]
+        yaw = arm_k.pose(q_now)[2] if yaw is None else yaw
+        try:
+            q = arm_k.ik(p, pitch, yaw, seed=q_now) if pitch is not None else arm_k.steepest(p, yaw, seed=q_now)[0]
+        except kin.Unreachable as e:
+            raise Fail("unreachable", str(e))
+        want_flip = turn == "flip"
+        if (abs(q[4] - q_now[4]) > 90) != want_flip:
+            turned = q.copy()
+            turned[4] += -180.0 if turned[4] > q_now[4] or (want_flip and turned[4] > 0) else 180.0
+            if arm_k.within_limits(turned):
+                q = turned
+            elif turn is not None:
+                raise Fail("unreachable", f"{arm} can't get there with its wrist turned that way")
+        return q
+
     def move_to(self, arm, xy, z=10.0, yaw=None, pitch=None):
-        p = np.array([xy[0] / 100, xy[1] / 100, z / 100])
-        self.play(Phase("move", {arm: Goal(p=p, pitch="steep" if pitch is None else pitch, yaw=yaw, line=False)}))
+        q = self.solve(arm, np.array([xy[0] / 100, xy[1] / 100, z / 100]), yaw, pitch)
+        self.play(Phase("move", {arm: Goal(joints=q, line=False)}))
         if self.core.holding.get(arm):
             return self.check_holding(arm, "slip")
         return {}
@@ -268,18 +290,30 @@ class Skills:
         if xy is None:
             raise Fail("check", "place needs xy or on")
         h = self.hold(arm)
-        arm_k = self.scene.arms[arm]
         want = np.array(xy, dtype=float) / 100
-        yaw = arm_k.pose(self.q()[arm])[2]
-        tip = want.copy()
-        for _ in range(3):  # where the fingertips go so that the object's centre lands on xy
+        q = None
+        yaw_now = self.scene.arms[arm].pose(self.q()[arm])[2]
+        # the jaw angle doesn't matter for setting it down: try the current one first, then others, each with the
+        # wrist either way round (the held object points the other way)
+        for yaw, turn in itertools.product([yaw_now + d for d in (0, 30, -30, 60, -60, 90)], ("keep", "flip")):
+            tip = want.copy()
             try:
-                q, _ = arm_k.steepest(np.append(tip, TRAVEL_Z), yaw, seed=self.q()[arm][:5])
-            except kin.Unreachable as e:
-                raise Fail("unreachable", str(e))
-            centre = (self.tool_T(arm, np.append(q, 0.0)) @ h["rel"])[:2, 3]
-            tip = tip + (want - centre)
-        self.move_to(arm, cm(tip), yaw=yaw)
+                for _ in range(6):  # where the fingertips go so that the object's centre lands on xy
+                    q = self.solve(arm, np.append(tip, TRAVEL_Z), yaw % 180, turn=turn)
+                    off = want - (self.tool_T(arm, np.append(q, 0.0)) @ h["rel"])[:2, 3]
+                    if np.linalg.norm(off) < 0.005:
+                        break
+                    tip = tip + off
+                else:
+                    q = None
+            except Fail:
+                q = None
+            if q is not None:
+                break
+        if q is None:
+            raise Fail("unreachable", f"{arm} can't put its centre at ({xy[0]:.1f}, {xy[1]:.1f}) cm")
+        self.play(Phase("move", {arm: Goal(joints=q, line=False)}))
+        self.check_holding(arm, "slip")
         return self.release(arm, set_down=True)
 
     def handover(self, giver, taker, mode="air", at=None):
