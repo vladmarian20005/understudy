@@ -1,0 +1,9 @@
+__pycache__/
+.pytest_cache/
+.DS_Store
+.env
+*.log
+logs/
+datasets/
+outputs/
+*.mp4
