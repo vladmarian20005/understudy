@@ -24,7 +24,7 @@ import zmq
 from . import sim
 from .controller import Controller
 from .motion import Planner
-from .perception import SimPerception
+from .perception import SimPerception, TablePerception
 from .recorder import DATASETS, Recorder
 from .scene import SIDES, Scene
 from .skills import Skills
@@ -51,7 +51,7 @@ class SimCameras:
 
 class Core:
     def __init__(self, sim_mode=True, speed=1.0, objects="brush", noise=0.0, arm=True, quiet=False,
-                 dataset="understudy_pass", datasets=DATASETS):
+                 dataset="understudy_pass", datasets=DATASETS, vision=False):
         self.scene = Scene()
         self.quiet = quiet
         self.events = collections.deque(maxlen=500)
@@ -68,17 +68,20 @@ class Core:
         if sim_mode:
             self.world = sim.SimWorld(self.scene, objects, noise)
             ios = self.world.io
-            self.perception = SimPerception(self.world, self.scene)
             self.cameras = SimCameras(self.scene, self.world)
+            self.perception = SimPerception(self.world, self.scene)
         else:
             from .bus import BusArmIO
+            from .cameras import ZmqCameras
 
             self.world = None
+            self.cameras = ZmqCameras()
+            self.cameras.wait()
             ios = {s: BusArmIO(self.scene.ports[s], self.scene.calibration_ids[s], self.scene.stroke_mm)
                    for s in SIDES}
-            self.perception = None
-            self.cameras = None
         self.ctl = Controller(ios, self.world, speed, on_event=self.event).start()
+        if vision or not sim_mode:  # objects from the overhead image, as on the real arms
+            self.perception = TablePerception(self.scene, self.cameras, self.ctl, self.holding)
         self.planner = Planner(self.scene)
         self.skills = Skills(self)
         if dataset:
@@ -261,8 +264,9 @@ def main():
     ap.add_argument("--noise", type=float, default=0.0, help="simulated perception error, cm")
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--dataset", default="understudy_pass", help="episodes go to datasets/<name>")
+    ap.add_argument("--vision", action="store_true", help="simulator: find objects in the rendered overhead image")
     a = ap.parse_args()
-    core = Core(a.sim, a.speed, a.objects, a.noise / 100, dataset=a.dataset)
+    core = Core(a.sim, a.speed, a.objects, a.noise / 100, dataset=a.dataset, vision=a.vision)
     quit_event = threading.Event()
     if sys.stdin.isatty():
         threading.Thread(target=keyboard, args=(core, quit_event), daemon=True).start()
