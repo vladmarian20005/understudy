@@ -5,6 +5,10 @@ goal), writes the goals, and calls the tick listeners (the recorder). In the sim
 A plan is done once the joints have settled on its last goal (the servos lag a little behind).
 Torque is only switched on by arm(), which first sets every goal to where the motors are now.
 
+Streaming (a policy driving the arms): stream() sets a pose target per arm, and every tick the goal moves toward it by
+at most STREAM_DEG_S / STREAM_MM_S, so a jumpy policy can't jerk the arms. Trajectories and streaming exclude each
+other.
+
 Reflexes: a joint more than TRACK_LIMIT degrees behind its goal for TRACK_TICKS ticks stops everything (something
 blocks the arm); a servo hotter than HOT_C stops everything too.
 """
@@ -22,6 +26,8 @@ SETTLE_DEG = 2.0  # a plan is done when every joint is this close to its last go
 SETTLE_TICKS = 50  # or after this long
 TEMP_EVERY = 100  # ticks
 WARM_C, HOT_C = 55, 62
+STREAM_DEG_S = 150.0  # how fast a streamed goal may move the joints
+STREAM_MM_S = 120.0  # and the gripper
 
 
 class Controller:
@@ -35,6 +41,7 @@ class Controller:
         self.q = {s: io.read() for s, io in ios.items()}
         self.goal = {s: q.copy() for s, q in self.q.items()}
         self.mode = {s: "off" for s in ios}
+        self.target = {}  # streamed pose targets, while a policy drives
         self.queue = []
         self.k = 0
         self.settle = 0
@@ -83,6 +90,7 @@ class Controller:
     def disarm(self):
         with self.lock:
             self._abort("torque off")
+            self.target = {}
             for s, io in self.ios.items():
                 io.torque(False)
                 self.mode[s] = "off"
@@ -96,6 +104,8 @@ class Controller:
                 return False, "torque off"
             if self.queue:
                 return False, "busy"
+            if self.target:
+                return False, "a policy is driving the arms"
             first = trajs[0]
             for s, rows in first.rows.items():
                 off = float(np.max(np.abs(rows[0, :5] - self.goal[s][:5])))
@@ -112,12 +122,24 @@ class Controller:
                 self.stop("stop requested")
         return self.reason is None, self.reason
 
+    def stream(self, targets):
+        """Policy mode: each arm in `targets` heads for its pose (5 joints in degrees, gripper in mm), rate-limited.
+        Returns False (and changes nothing) when torque is off or a trajectory is playing."""
+        with self.lock:
+            if not self.armed() or self.queue:
+                return False
+            for s, g in targets.items():
+                self.target[s] = np.asarray(g, dtype=float).copy()
+                self.mode[s] = "policy"
+            return True
+
     def stop(self, reason="stop requested"):
         """Both arms hold where they are now."""
         with self.lock:
-            if self.queue:
+            if self.queue or self.target:
                 self.on_event(f"stopped: {reason}", "warn")
             self._abort(reason)
+            self.target = {}
             for s in self.ios:
                 if self.mode[s] != "off":
                     self.goal[s] = self.q[s].copy()
@@ -172,6 +194,11 @@ class Controller:
                                 if self.mode[s] == "moving":
                                     self.mode[s] = "hold"
                             self.idle.set()
+            elif self.target:
+                for s, tgt in self.target.items():
+                    step = np.full(6, STREAM_DEG_S * TICK)
+                    step[5] = STREAM_MM_S * TICK
+                    self.goal[s] = self.goal[s] + np.clip(tgt - self.goal[s], -step, step)
             for s, io in self.ios.items():
                 if self.mode[s] != "off":
                     io.write(self.goal[s])
@@ -197,6 +224,7 @@ class Controller:
             if self.lag[s] >= TRACK_TICKS:
                 self.lag[s] = 0
                 self._abort(f"blocked: {s} is {err:.0f} deg behind its goal")
+                self.target = {}
                 self.on_event(f"reflex: {s} is {err:.0f} deg behind its goal, holding", "warn")
                 for t in self.ios:
                     if self.mode[t] != "off":
@@ -207,8 +235,13 @@ class Controller:
                 temps = io.temperatures()
                 self.temps[s] = temps
                 hot = max(temps)
-                if hot >= HOT_C and self.queue:
+                if hot >= HOT_C and (self.queue or self.target):
                     self._abort(f"hot: {s} servo at {hot:.0f} C")
+                    self.target = {}
+                    for t in self.ios:
+                        if self.mode[t] != "off":
+                            self.goal[t] = self.q[t].copy()
+                            self.mode[t] = "hold"
                     self.on_event(f"{s} servo at {hot:.0f} C: stopped, let it cool", "warn")
                 elif hot >= WARM_C and self.ticks % (TEMP_EVERY * 15) == 0:
                     self.on_event(f"{s} servo at {hot:.0f} C", "warn")

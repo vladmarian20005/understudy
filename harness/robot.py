@@ -121,3 +121,26 @@ def episode_end(valid=True, note=None):
 
 def episode_label(episode, section, data):
     return call("episode_label", episode=episode, section=section, data=data)
+
+
+def policy_start(path, max_s=None, task=None):
+    """Start a trained policy (a checkpoint or training run directory) driving both arms; returns at once."""
+    return call("policy_start", timeout_s=120, path=path, max_s=max_s, task=task)
+
+
+def policy_stop(reason="policy_stop"):
+    return call("policy_stop", reason=reason)
+
+
+def run_policy(path, max_s, done=None, task=None):
+    """Run a policy until max_s, or until done(status) returns true; then stop it. Returns the run's summary."""
+    r = policy_start(path, max_s, task)
+    if not r.get("ok"):
+        return dict(ok=False, why="; ".join(r.get("errors", [])))
+    while True:
+        st = status()
+        if not st["policy"]["running"]:
+            return dict(ok=True, **(st["policy"]["last"] or {}))
+        if done is not None and done(st):
+            return policy_stop("done")
+        time.sleep(0.1)

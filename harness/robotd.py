@@ -26,6 +26,7 @@ from .cameras import Publisher, sizes as camera_sizes
 from .controller import Controller
 from .motion import Planner
 from .perception import SimPerception, TablePerception
+from .policy import TASK, PolicyRunner
 from .recorder import DATASETS, Recorder
 from .scene import SIDES, Scene
 from .skills import Skills
@@ -93,6 +94,7 @@ class Core:
             self.perception = TablePerception(self.scene, self.cameras, self.ctl, self.holding)
         self.planner = Planner(self.scene)
         self.skills = Skills(self)
+        self.policy = PolicyRunner(self)
         self.publisher = None
         if sim_mode and stream_cameras:  # the simulator's cameras on the rig's ports, for viewers and the UI
             try:
@@ -105,6 +107,8 @@ class Core:
             self.ctl.arm()
 
     def close(self):
+        if self.policy.active():
+            self.policy.stop("robotd closing")
         if self.publisher is not None:
             self.publisher.close()
         self.ctl.close()
@@ -152,6 +156,8 @@ class Core:
         with self.skill_lock:
             if self.busy():
                 return dict(ok=False, errors=[f"{self.skill['name']} is still running"], fail="busy")
+            if self.policy.active():
+                return dict(ok=False, errors=["a policy is driving the arms: policy_stop first"], fail="busy")
             if not self.ctl.armed():
                 return dict(ok=False, errors=["the arms are off: Vlad switches torque on (key a)"], fail="torque_off")
             self.cancel.clear()
@@ -195,7 +201,8 @@ class Core:
             sk = dict(self.skill)
             return dict(ok=True, armed=self.ctl.armed(), busy=self.busy(), skill=sk, arms=self.arms_state(),
                         events=self.events_since(req.get("since", 0)), last_event=self.ev_id,
-                        episode=self.recorder.status() if self.recorder else None, cameras=self.cameras.health())
+                        episode=self.recorder.status() if self.recorder else None, cameras=self.cameras.health(),
+                        policy=self.policy.status())
         if cmd == "look":
             return self.look(req.get("cams", ["overhead"]), req.get("annotate", True))
         if cmd == "detect":
@@ -206,8 +213,14 @@ class Core:
             return self.start_skill(req.get("name"), req.get("args") or {})
         if cmd == "stop":
             self.cancel.set()
+            if self.policy.active():
+                self.policy.stop(req.get("reason", "stop requested"))
             self.ctl.stop(req.get("reason", "stop requested"))
             return dict(ok=True)
+        if cmd == "policy_start":
+            return self.policy.start(req.get("path", ""), req.get("max_s"), req.get("task") or TASK)
+        if cmd == "policy_stop":
+            return self.policy.stop(req.get("reason", "policy_stop"))
         if cmd in ("episode_begin", "episode_end", "episode_label"):
             if self.recorder is None:
                 return dict(ok=False, errors=["no recorder in this robotd"])
@@ -259,6 +272,8 @@ def keyboard(core, quit_event):
                 core.ctl.arm()
             elif ch == " ":
                 core.cancel.set()
+                if core.policy.active():
+                    core.policy.stop("space pressed")
                 core.ctl.stop("space pressed")
             elif ch == "x":
                 if time.time() - last_x < 1.5:
