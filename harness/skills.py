@@ -341,12 +341,13 @@ class Skills:
                 raise
             self.play(Phase("pull out", {arm: Goal(p=p, pitch="steep", line=False)}, speed="slow"))
 
-    def home(self, arms=("left", "right")):
+    def home(self, arms=("left", "right"), width=None):
+        """Park the arms; width (mm) also sets the grippers' opening."""
         arms = [arms] if isinstance(arms, str) else list(arms)
         goals = {}
         for s in arms:
             q, _ = self.scene.arms[s].steepest(self.scene.home_tip(s), seed=self.q()[s][:5], lowest=0)
-            goals[s] = Goal(joints=q, line=False)
+            goals[s] = Goal(joints=q, line=False, width=width)
         self.play(Phase("home", goals))
         self.wait(HOME_SETTLE_S)  # holding still is when the controller learns the arms' sag
         return {}

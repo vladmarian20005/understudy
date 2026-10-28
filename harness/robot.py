@@ -74,8 +74,8 @@ def handover(giver, taker, mode=None, at=None):
     return _motion("handover", giver=giver, taker=taker, mode=mode, at=at)
 
 
-def home(arms=None):
-    return _motion("home", arms=arms)
+def home(arms=None, width=None):
+    return _motion("home", arms=arms, width=width)
 
 
 def pick(arm, target, width=None, offset=None):

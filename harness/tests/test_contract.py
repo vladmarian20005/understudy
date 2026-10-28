@@ -169,3 +169,9 @@ def test_pixels_and_table_cm_convert_both_ways(core):
     back = call(core, "to_table", px=px[:1])["cm"]
     assert back[0] == pytest.approx([10.0, 25.0], abs=0.05)
     assert call(core, "to_table", px=px[1:], z_cm=4.0)["cm"][0] == pytest.approx([-15.0, 30.0], abs=0.05)
+
+
+def test_home_can_set_the_grippers(core):
+    assert skill(core, "home", width=80)["outcome"] == "done"
+    st = call(core, "status")
+    assert all(a["width_mm"] == pytest.approx(80, abs=1) for a in st["arms"].values())
