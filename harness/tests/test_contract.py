@@ -150,7 +150,7 @@ def test_simulated_faults_reach_the_failure_kinds(tmp_path):
 
 
 def test_a_simulated_camera_drop_out_invalidates_the_episode(tmp_path):
-    c = Core(sim_mode=True, speed=0, quiet=True, dataset="drop", datasets=str(tmp_path), faults={"camera": 1.0})
+    c = Core(sim_mode=True, speed=0, quiet=True, dataset="drop", datasets=str(tmp_path), faults={"camera": 0.2})
     try:
         assert call(c, "episode_begin", task="t")["ok"]
         for name, args in [("pick", dict(arm="left", target="brush")), ("place", dict(arm="left", xy=[-14, 28]))]:
@@ -160,3 +160,12 @@ def test_a_simulated_camera_drop_out_invalidates_the_episode(tmp_path):
         assert robot["valid"] is False and robot["camera_gaps"] > 0 and "camera drop-out" in robot["note"]
     finally:
         c.close()
+
+
+def test_pixels_and_table_cm_convert_both_ways(core):
+    cm = [[10.0, 25.0], [-15.0, 30.0, 4.0]]
+    px = call(core, "to_pixels", cm=cm)["px"]
+    assert len(px) == 2 and all(0 <= u < 640 and 0 <= v < 480 for u, v in px)
+    back = call(core, "to_table", px=px[:1])["cm"]
+    assert back[0] == pytest.approx([10.0, 25.0], abs=0.05)
+    assert call(core, "to_table", px=px[1:], z_cm=4.0)["cm"][0] == pytest.approx([-15.0, 30.0], abs=0.05)

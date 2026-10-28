@@ -252,6 +252,14 @@ class Core:
                 self.policy.stop(req.get("reason", "stop requested"))
             self.ctl.stop(req.get("reason", "stop requested"))
             return dict(ok=True)
+        if cmd == "to_table":  # overhead pixels -> table cm, at a height above the table (default 0)
+            px = np.asarray(req.get("px", []), dtype=float).reshape(-1, 2)
+            pts = self.scene.camera.to_table(px, z=float(req.get("z_cm", 0.0)) / 100) if len(px) else []
+            return dict(ok=True, cm=[[round(float(v) * 100, 2) for v in p[:2]] for p in pts])
+        if cmd == "to_pixels":  # table cm (x, y, optional height) -> overhead pixels
+            pts = [list(p) + [0.0] * (3 - len(p)) for p in req.get("cm", [])]
+            px = self.scene.camera.project(np.asarray(pts, dtype=float) / 100) if pts else []
+            return dict(ok=True, px=[[round(float(v), 1) for v in p] for p in px])
         if cmd == "policy_start":
             return self.policy.start(req.get("path", ""), req.get("max_s"), req.get("task") or TASK)
         if cmd == "policy_stop":

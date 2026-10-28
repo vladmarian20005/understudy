@@ -123,6 +123,16 @@ def episode_label(episode, section, data):
     return call("episode_label", episode=episode, section=section, data=data)
 
 
+def to_table(px, z_cm=0.0):
+    """Overhead-camera pixels [[u, v], ...] to table cm [[x, y], ...], at a height above the table."""
+    return call("to_table", px=[list(p) for p in px], z_cm=z_cm)["cm"]
+
+
+def to_pixels(cm):
+    """Table cm [[x, y] or [x, y, z], ...] to overhead-camera pixels."""
+    return call("to_pixels", cm=[list(p) for p in cm])["px"]
+
+
 def policy_start(path, max_s=None, task=None):
     """Start a trained policy (a checkpoint or training run directory) driving both arms; returns at once."""
     return call("policy_start", timeout_s=120, path=path, max_s=max_s, task=task)
