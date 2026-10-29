@@ -82,8 +82,8 @@ def pick(arm, target, width=None, offset=None):
     return _motion("pick", arm=arm, target=target, width=width, offset=offset)
 
 
-def place(arm, xy=None, on=None):
-    return _motion("place", arm=arm, xy=xy, on=on)
+def place(arm, xy=None, on=None, yaw=None):
+    return _motion("place", arm=arm, xy=xy, on=on, yaw=yaw)
 
 
 def look(cams=("overhead",), annotate=True):

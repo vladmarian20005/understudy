@@ -50,6 +50,15 @@ def test_ping_pong_pass(core):
     assert run(core, "home")["outcome"] == "done"
 
 
+def test_place_turns_the_object_to_a_yaw(core):
+    assert run(core, "pick", arm="left", target="brush")["outcome"] == "done"
+    assert run(core, "handover", giver="left", taker="right")["outcome"] == "done"
+    r = run(core, "place", arm="right", xy=[12, 24], yaw=-20)
+    assert r["outcome"] == "done", r["why"]
+    yaw = (brush(core).yaw + 90) % 180 - 90
+    assert abs(yaw + 20) < 8, yaw
+
+
 def test_a_set_down_near_the_base_picks_a_pose_it_can_lower_from(core):
     """Close in front of a base the first pose found held the brush at a shallow pitch that can't go lower, and the
     touch-down's steeper fallback swung the brush's far end under the table (2 of 400 sim episodes)."""

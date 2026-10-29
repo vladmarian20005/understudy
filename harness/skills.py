@@ -36,6 +36,7 @@ TOUCH_FLOOR = -0.006  # m: and never lower than this under the table
 ON_TABLE = 0.008  # m: a grasp that touches down with its lowest finger higher than this landed on the object
 LIFT_OFF = 0.005  # m: after touching the table, the lowest finger rises at least this far before closing
 HOME_SETTLE_S = 0.6
+YAW_TOL = 8.0  # deg: how far a set-down asked for an angle may lie from it
 
 
 class Fail(Exception):
@@ -385,8 +386,14 @@ class Skills:
         self.reach(arm, target=target, width=width, offset=offset)
         return self.grasp(arm)
 
-    def place(self, arm, xy=None, on=None):
-        """Put the held object down with its centre at xy (cm), or on another object."""
+    def held_yaw(self, arm, h, q):
+        """The angle (deg) a held object's long side would lie at on the table, with the arm at joints q."""
+        ax = (self.tool_T(arm, np.append(q, 0.0)) @ h["rel"])[:3, int(np.argmax(h["size"]))]
+        return math.degrees(math.atan2(ax[1], ax[0]))
+
+    def place(self, arm, xy=None, on=None, yaw=None):
+        """Put the held object down with its centre at xy (cm), or on another object. yaw (deg): with its long side
+        at that angle, within YAW_TOL."""
         if on is not None:
             xy = self.resolve(on)["center_cm"]
         if xy is None:
@@ -394,19 +401,46 @@ class Skills:
         h = self.hold(arm)
         want = np.array(xy, dtype=float) / 100
         yaw_now = self.scene.arms[arm].pose(self.q()[arm])[2]
-        # the jaw angle doesn't matter for setting it down: try the current one first, then others, each with the
-        # wrist either way round (the held object points the other way); best one it can lower straight down from
-        def pose(down):
-            for yaw, turn in itertools.product([yaw_now + d for d in (0, 30, -30, 60, -60, 90)], ("keep", "flip")):
+
+        # unless yaw asks for one, the jaw angle doesn't matter for setting it down: try the current one first, then
+        # others, each with the wrist either way round (the held object points the other way); best one it can lower
+        # straight down from
+        def free(down):
+            for jaw, turn in itertools.product([yaw_now + d for d in (0, 30, -30, 60, -60, 90)], ("keep", "flip")):
                 try:
-                    return self.place_pose(arm, h, want, yaw % 180, turn, down=down)
+                    return self.place_pose(arm, h, want, jaw % 180, turn, down=down)
                 except Fail:
                     continue
             return None
 
+        # a held object hangs tilted, so it doesn't lie square to the jaws: aim the jaws, see where the object would
+        # point, correct by the difference, a few times; a correction that leaves the reach is halved
+        def aimed(down):
+            best = (YAW_TOL, None)
+            for turn, start in itertools.product(("keep", "flip"), (0.0, -20.0, 20.0)):
+                jaw, step = yaw + 90.0 + start, 0.0
+                for _ in range(5):
+                    try:
+                        poses = self.place_pose(arm, h, want, (jaw + step) % 180, turn, down=down)
+                    except Fail:
+                        if abs(step) < 2:
+                            break
+                        step /= 2
+                        continue
+                    jaw += step
+                    err = kin.wrap90(self.held_yaw(arm, h, poses[0]) - yaw)
+                    if abs(err) <= best[0]:
+                        best = (abs(err), poses)
+                    if abs(err) < 2:
+                        return poses
+                    step = -err
+            return best[1]
+
+        pose = free if yaw is None else aimed
         poses = pose(True) or pose(False)
         if poses is None:
-            raise Fail("unreachable", f"{arm} can't put its centre at ({xy[0]:.1f}, {xy[1]:.1f}) cm")
+            raise Fail("unreachable", f"{arm} can't put its centre at ({xy[0]:.1f}, {xy[1]:.1f}) cm"
+                       + ("" if yaw is None else f" with its long side at {yaw:.0f} deg"))
         q, q_high = poses
         # swing over high and come down onto the spot, so the object doesn't sweep low on the way; if even that
         # would drag it, lift it straight up first
