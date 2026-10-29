@@ -20,13 +20,14 @@ import numpy as np
 
 from .cameras import CameraDown
 from .kin import JOINTS
-from .motion import ARM_FLOOR, ARM_GAP, TIP_FLOOR, Z_MAX, arms_gap
+from .motion import ARM_FLOOR, ARM_GAP, Z_MAX, arms_gap
 from .recorder import CAM_KEYS, FPS, frame_images, vector
 from .scene import SIDES
 
 TASK = "Pass the brush to the other arm"
 REFUSE_DEG = 15.0  # this far past a joint limit is a broken policy, not an overshoot
-FLOOR_SLACK = 0.002  # m below the planner's fingertip floor
+TOUCH_FLOOR = -0.006  # m: fingertips may reach this far "into" the table, as a touch-down does (the table stops them)
+FLOOR_SLACK = 0.002  # m below the planner's arm floor
 GAP_FRACTION = 0.5  # of the planner's arm gap
 
 
@@ -68,7 +69,7 @@ def check_pose(scene, targets):
         q[:5] = np.clip(q[:5], arm.limits[:, 0], arm.limits[:, 1])
         pts[s] = arm.points(q)
         tip = pts[s][-1]
-        if tip[2] < TIP_FLOOR - FLOOR_SLACK:
+        if tip[2] < TOUCH_FLOOR:
             return f"{s} fingertips would go {tip[2] * 100:.1f} cm from the table"
         if np.min(pts[s][1:-1, 2]) < ARM_FLOOR - FLOOR_SLACK:
             return f"{s} arm would come within 2 cm of the table"
