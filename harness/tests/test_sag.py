@@ -110,3 +110,13 @@ def test_an_arm_that_stops_short_is_reported_blocked(core):
     core.world.solid_in_the_way = lambda side, q0, q1: side == "left"
     r = run(core, "move_to", arm="left", xy=[-10, 30], z=8)
     assert r["outcome"] == "stopped" and r["fail"] == "blocked", r
+
+
+def test_no_sag_is_learned_while_holding_something(core):
+    run(core, "home")
+    assert run(core, "pick", arm="left", target="brush")["outcome"] == "done"
+    n = core.ctl.sag["left"].samples
+    t0 = core.ctl.now()
+    while core.ctl.now() - t0 < 1.5:  # holds the brush still
+        time.sleep(0.01)
+    assert core.ctl.sag["left"].samples == n

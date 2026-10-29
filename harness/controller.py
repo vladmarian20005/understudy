@@ -6,7 +6,8 @@ A plan is done once the joints have settled on its last goal (the servos lag a l
 Torque is only switched on by arm(), which first sets every goal to where the motors are now.
 
 Gravity: every goal is written with a feed-forward offset against the arm's sag (gravity.py), and while an arm holds
-still the controller learns its compliance from the encoders, so the arms end where they're told to.
+still the controller learns its compliance from the encoders, so the arms end where they're told to. Not while its
+gripper squeezes something: the object's weight would read as a softer arm.
 
 Contact: in a trajectory marked contact (a touch-down), a moving arm whose measured fingertips rise CONTACT_M above the
 commanded ones, compared with where they were when the trajectory started (so a sag estimate that's still off doesn't
@@ -57,6 +58,7 @@ CONTACT_TICKS = 3
 LEARN_AFTER = 15  # ticks an arm must hold still before its sag is learned from it
 LEARN_EVERY = 5
 LEARN_MIN_Z = 0.03  # m: only from fingertips this high (not resting on the table)
+SQUEEZING_MM = 2.0  # the gripper is commanded this much tighter than it is: it's holding something
 STREAM_DEG_S = 150.0  # how fast a streamed goal may move the joints
 STREAM_MM_S = 120.0  # and the gripper
 
@@ -410,7 +412,8 @@ class Controller:
                     self.contact.pop(s, None)
             else:
                 self.still[s] += 1
-            if (self.mode[s] == "hold" and s in self.arms_k and s not in self.contact
+            holding = self.goal[s][5] < self.q[s][5] - SQUEEZING_MM
+            if (self.mode[s] == "hold" and s in self.arms_k and s not in self.contact and not holding
                     and self.still[s] >= LEARN_AFTER and self.still[s] % LEARN_EVERY == 0):
                 arm = self.arms_k[s]
                 if arm.tool(self.q[s])[0][2] > LEARN_MIN_Z:
