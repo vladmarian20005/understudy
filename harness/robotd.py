@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 import zmq
 
-from . import sim
+from . import overlay, sim
 from .cameras import CameraDown, Publisher, sizes as camera_sizes
 from .controller import Controller
 from .motion import Planner
@@ -220,10 +220,7 @@ class Core:
         if self.cameras is not None:
             for n, img in self.cameras.grab([c for c in cams if c in CAMERAS]).items():
                 if n == "overhead" and annotate:
-                    img = img.copy()
-                    for d in dets:
-                        u, v = d["px"]
-                        cv2.putText(img, d["id"], (u + 6, v - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                    img = overlay.draw(img, self.scene, dets, self.arms_state())
                 ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 images[n] = base64.b64encode(buf.tobytes()).decode()
         return dict(ok=True, objects=dets, images=images, arms=self.arms_state())
