@@ -50,6 +50,18 @@ def test_ping_pong_pass(core):
     assert run(core, "home")["outcome"] == "done"
 
 
+def test_a_set_down_near_the_base_picks_a_pose_it_can_lower_from(core):
+    """Close in front of a base the first pose found held the brush at a shallow pitch that can't go lower, and the
+    touch-down's steeper fallback swung the brush's far end under the table (2 of 400 sim episodes)."""
+    run(core, "home")
+    core.world.place("brush", [0.117, 0.22], yaw=-18)
+    for name, args in [("pick", dict(arm="right", target="brush")), ("handover", dict(giver="right", taker="left")),
+                       ("place", dict(arm="left", xy=[-13.1, 20.0]))]:
+        r = run(core, name, **args)
+        assert r["outcome"] == "done", (name, r["why"])
+    assert np.linalg.norm(brush(core).pos[:2] * 100 - [-13.1, 20.0]) < 3
+
+
 def test_table_handover(core):
     run(core, "pick", arm="left", target="brush")
     r = run(core, "handover", giver="left", taker="right", mode="table")

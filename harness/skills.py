@@ -380,15 +380,19 @@ class Skills:
         want = np.array(xy, dtype=float) / 100
         yaw_now = self.scene.arms[arm].pose(self.q()[arm])[2]
         # the jaw angle doesn't matter for setting it down: try the current one first, then others, each with the
-        # wrist either way round (the held object points the other way)
-        for yaw, turn in itertools.product([yaw_now + d for d in (0, 30, -30, 60, -60, 90)], ("keep", "flip")):
-            try:
-                q, q_high = self.place_pose(arm, h, want, yaw % 180, turn)
-                break
-            except Fail:
-                continue
-        else:
+        # wrist either way round (the held object points the other way); best one it can lower straight down from
+        def pose(down):
+            for yaw, turn in itertools.product([yaw_now + d for d in (0, 30, -30, 60, -60, 90)], ("keep", "flip")):
+                try:
+                    return self.place_pose(arm, h, want, yaw % 180, turn, down=down)
+                except Fail:
+                    continue
+            return None
+
+        poses = pose(True) or pose(False)
+        if poses is None:
             raise Fail("unreachable", f"{arm} can't put its centre at ({xy[0]:.1f}, {xy[1]:.1f}) cm")
+        q, q_high = poses
         # swing over high and come down onto the spot, so the object doesn't sweep low on the way; if even that
         # would drag it, lift it straight up first
         over = [Phase("move", {arm: Goal(joints=q_high, line=False)})]
@@ -412,9 +416,11 @@ class Skills:
         self.check_holding(arm, "slip")
         return self.release(arm, set_down=True)
 
-    def place_pose(self, arm, h, want, yaw, turn):
+    def place_pose(self, arm, h, want, yaw, turn, down=False):
         """Joints that hold the object with its centre over want (m) and its low end CARRY_CLEAR above the table,
         and the highest of SWING_UP, half that or the same pose to swing over in, for one jaw angle and wrist turn.
+        down: also only where the set-down can lower it straight down at the same pitch (close to the base a shallow
+        pitch doesn't reach low, and a steeper one swings a held object's far end down into the table).
         Raises Fail when they don't exist."""
         def centred(z):
             tip = want.copy()
@@ -432,6 +438,16 @@ class Skills:
         z = TRAVEL_Z + max(0.0, CARRY_CLEAR - low)
         if z > TRAVEL_Z:
             q = centred(z)
+        if down:
+            T = self.tool_T(arm, np.append(q, 0.0))
+            low = float(np.min(held_corners(T, h)[:, 2]))
+            tip = T[:3, 3] - [0.0, 0.0, low + TOUCH_BELOW]  # where release's touch-down aims
+            tip[2] = max(tip[2], TOUCH_FLOOR)
+            _, pitch, yaw_q = self.scene.arms[arm].pose(q)
+            try:
+                self.scene.arms[arm].ik(tip, pitch, yaw_q, seed=q)
+            except kin.Unreachable as e:
+                raise Fail("unreachable", str(e))
         for up in (SWING_UP, SWING_UP / 2):  # close in front of the base, high poses don't reach
             try:
                 return q, centred(z + up)
