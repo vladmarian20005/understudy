@@ -129,7 +129,9 @@ class Recorder:
                 self.ds.finalize()
                 self.ds, self.ep = None, None
                 return dict(ok=False, errors=["the episode has no frames"])
-            self.ds.save_episode()
+            # the videos are encoded here, one camera after another: lerobot's process pool for them is slower (each
+            # worker starts and imports lerobot) and a worker dying now and then lost the episode
+            self.ds.save_episode(parallel_encoding=False)
             self.ds.finalize()
             self.ds = None
             if ep["camera_gaps"]:
