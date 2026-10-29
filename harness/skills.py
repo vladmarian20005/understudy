@@ -326,8 +326,9 @@ class Skills:
         if set_down and h is not None:  # lower until the object's low end rests on the table, then open
             low = float(np.min(held_corners(self.tool_T(arm, self.q()[arm]), h)[:, 2]))
             self.touch_down(arm, [tip[0], tip[1], tip[2] - low - TOUCH_BELOW])
-            self.play(Phase("let go", {arm: Goal(width=opening)}),
-                      Phase("up", {arm: Goal(p=[tip[0], tip[1], max(tip[2], TRAVEL_Z)], pitch="steep", line=False)}))
+            self.play(Phase("let go", {arm: Goal(width=opening)}))
+            self.core.holding[arm] = None  # it rests on the table now: the way up mustn't carry it along
+            self.play(Phase("up", {arm: Goal(p=[tip[0], tip[1], max(tip[2], TRAVEL_Z)], pitch="steep", line=False)}))
         else:
             self.play(Phase("let go", {arm: Goal(width=opening)}))
             self.pull_out(arm)
