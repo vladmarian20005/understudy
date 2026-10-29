@@ -66,6 +66,10 @@ def move_to(arm, xy, z=None, yaw=None, pitch=None):
     return _motion("move_to", arm=arm, xy=xy, z=z, yaw=yaw, pitch=pitch)
 
 
+def move(left=None, right=None, speed=None, check_only=None):
+    return _motion("move", left=left, right=right, speed=speed, check_only=check_only)
+
+
 def release(arm, set_down=None):
     return _motion("release", arm=arm, set_down=set_down)
 

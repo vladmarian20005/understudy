@@ -17,7 +17,7 @@ import time
 import numpy as np
 
 from . import kin, perception
-from .motion import Goal, Phase, PlanError, held_corners
+from .motion import SPEEDS, Goal, Phase, PlanError, held_corners
 
 FAIL_KINDS = ("miss", "finger_on_object", "no_contact", "slip", "dropped", "unreachable", "check", "blocked",
               "manual", "torque_off", "busy", "timeout", "not_seen")
@@ -334,6 +334,68 @@ class Skills:
             return self.check_holding(arm, "slip")
         return {}
 
+    def move(self, left=None, right=None, speed="normal", check_only=False):
+        """Free-form motion. For each arm a keyframe or a list of them; the k-th keyframes of both arms make one phase,
+        and both finish each phase together. A keyframe (table cm, degrees, mm): xy [x, y], z, rel [dx, dy, dz] (from
+        where the previous keyframe left it), yaw (the jaw line, mod 180), pitch (90 straight down, 0 level; left
+        out: as steep as reaches there), width (the opening). What's left out stays as it was. Picking up and
+        letting go are grasp and release (they feel for the table); check_only plans and checks without moving."""
+        frames = {}
+        for side, kf in (("left", left), ("right", right)):
+            if kf is not None:
+                frames[side] = [kf] if isinstance(kf, dict) else list(kf)
+        if not frames:
+            raise Fail("check", "move needs keyframes for left, right or both")
+        if speed not in SPEEDS:
+            raise Fail("check", f"speed is one of {', '.join(SPEEDS)}")
+        q0 = self.q()
+        tips = {s: self.tool_T(s, q0[s])[:3, 3] for s in frames}
+
+        def goal(side, kf, line):
+            unknown = set(kf) - {"xy", "z", "rel", "yaw", "pitch", "width"}
+            if unknown:
+                raise Fail("check", f"unknown keyframe keys {sorted(unknown)}: use xy, z, rel, yaw, pitch, width")
+            p = tips[side].copy()
+            if "xy" in kf:
+                p[:2] = np.array(kf["xy"], dtype=float) / 100
+            if "z" in kf:
+                p[2] = float(kf["z"]) / 100
+            if "rel" in kf:
+                p += np.array(kf["rel"], dtype=float) / 100
+            moves = bool({"xy", "z", "rel", "yaw", "pitch"} & set(kf))
+            tips[side] = p
+            return Goal(p=p if moves else None, yaw=kf.get("yaw"), width=kf.get("width"),
+                        pitch=kf.get("pitch", "steep") if moves else None, line=line)
+
+        def phases(line):
+            for s in frames:
+                tips[s] = self.tool_T(s, q0[s])[:3, 3]
+            n = max(len(f) for f in frames.values())
+            return [Phase(f"move {k + 1}", {s: goal(s, f[k], line) for s, f in frames.items() if k < len(f)},
+                          speed=speed) for k in range(n)]
+
+        try:
+            try:
+                trajs = self.core.planner.plan(q0, phases(True))
+                line = True
+            except PlanError as e:  # a straight fingertip line that leaves the reach: swing the joints instead
+                if e.kind != "unreachable":
+                    raise
+                trajs = self.core.planner.plan(q0, phases(False))
+                line = False
+        except PlanError as e:
+            raise Fail(e.kind, e.why)
+        plan = dict(phases=len(trajs), duration_s=round(sum(t.duration for t in trajs), 2),
+                    ends={s: cm(self.scene.arms[s].tool(trajs[-1].rows[s][-1])[0]) for s in frames})
+        if check_only:
+            return dict(checked=plan)
+        self.play(*phases(line))
+        out = dict(plan)
+        for s in frames:
+            if self.core.holding.get(s):
+                out.update(self.check_holding(s, "slip"))
+        return out
+
     def release(self, arm, set_down=True):
         h = self.core.holding.get(arm)
         w = self.width(arm)
@@ -621,4 +683,4 @@ class Skills:
         return res
 
 
-PRIMITIVES = ("reach", "grasp", "move_to", "release", "handover", "home", "pick", "place")
+PRIMITIVES = ("reach", "grasp", "move_to", "move", "release", "handover", "home", "pick", "place")

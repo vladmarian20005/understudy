@@ -50,6 +50,42 @@ def test_ping_pong_pass(core):
     assert run(core, "home")["outcome"] == "done"
 
 
+def tip(core, side):
+    return core.scene.arms[side].tool(core.ctl.snapshot()["q"][side])[0] * 100
+
+
+def test_move_plays_keyframes_for_both_arms_in_step(core):
+    left0, right0 = tip(core, "left"), tip(core, "right")
+    r = run(core, "move", left={"rel": [0, 0, 5]}, right={"rel": [0, 0, 5]}, check_only=True)
+    assert r["outcome"] == "done" and r["checked"]["phases"] == 1
+    assert np.allclose(tip(core, "left"), left0, atol=0.2)  # checked, not moved
+    assert abs(r["checked"]["ends"]["left"][2] - (left0[2] + 5)) < 0.5
+    r = run(core, "move", left=[{"xy": [-10, 25], "z": 12}, {"rel": [0, 5, 0], "yaw": 0}],
+            right={"xy": [10, 25], "z": 8, "width": 20})
+    assert r["outcome"] == "done" and r["phases"] == 2, r["why"]
+    assert np.allclose(tip(core, "left"), [-10, 30, 12], atol=0.5)
+    assert np.allclose(tip(core, "right"), [10, 25, 8], atol=0.5)
+    assert abs(r["arms"]["left"]["yaw"] % 180) < 2 or abs(r["arms"]["left"]["yaw"] % 180 - 180) < 2
+    assert abs(r["arms"]["right"]["width_mm"] - 20) < 1
+
+
+def test_move_refuses_what_it_cant_do_without_moving(core):
+    before = tip(core, "left")
+    for args, kind, words in [(dict(left={"z": -5}), "check", "table"),
+                              (dict(left={"xy": [60, 25]}), "unreachable", "reach"),
+                              (dict(left={"up": 3}), "check", "unknown keyframe"), (dict(), "check", "keyframes"),
+                              (dict(left={"z": 12}, speed="warp"), "check", "speed")]:
+        r = run(core, "move", **args)
+        assert r["outcome"] == "refused" and r["fail"] == kind and words in r["why"], (args, r["why"])
+    assert np.allclose(tip(core, "left"), before, atol=0.2)
+
+
+def test_move_carries_a_held_object(core):
+    assert run(core, "pick", arm="left", target="brush")["outcome"] == "done"
+    r = run(core, "move", left={"rel": [5, 0, 3]})
+    assert r["outcome"] == "done" and r["width_mm"] > 20 and list(brush(core).held) == ["left"]
+
+
 def test_place_turns_the_object_to_a_yaw(core):
     assert run(core, "pick", arm="left", target="brush")["outcome"] == "done"
     assert run(core, "handover", giver="left", taker="right")["outcome"] == "done"
