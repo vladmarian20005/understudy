@@ -64,9 +64,10 @@ class SimObject:
         c = np.array([[sx * L / 2, sy * W / 2, sz * H / 2] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])
         return c @ self.R.T + self.pos
 
-    def extent(self, d):
-        """The object's width along direction d (m)."""
-        return float(sum(abs(d @ self.R[:, i]) * s for i, s in enumerate(self.size)))
+    def extent(self, d, R=None):
+        """The object's width along direction d (m), at its rotation or R."""
+        R = self.R if R is None else R
+        return float(sum(abs(d @ R[:, i]) * s for i, s in enumerate(self.size)))
 
 
 def rot_z(deg):
@@ -243,7 +244,9 @@ class SimWorld:
         """Where a moving gripper stops (mm), or None. Closing on an object grasps it; opening lets it go."""
         for o in self.objects:
             if side in o.held:
-                e = o.extent(self.tool(side)[1]) * 1000
+                # where the object is now, carried by these fingers (its own pose is only updated after the joints)
+                _, j, _, T = self.tool(side)
+                e = o.extent(j, (T @ o.held[side])[:3, :3]) * 1000
                 if w_next > e + 3:
                     self.release(side, o)
                     return None

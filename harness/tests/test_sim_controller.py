@@ -145,3 +145,23 @@ def test_real_arm_goes_live_where_it_is():
     assert ("torque", False) in names[:i_goal]
     io.write([10, 20, 30, 40, 50, 84])
     assert bus.calls[-1][2]["gripper"] == pytest.approx(100)
+
+
+def test_a_long_held_object_stays_held_while_the_wrist_turns(scene):
+    """The fingers' grip on a long object is checked against where the object is now, not a tick ago."""
+    world = sim.SimWorld(scene, "brush", sag=False)
+    ctl = Controller(world.io, world, speed=0).start()
+    ctl.arm()
+    brush = world.objects[0]
+    x, y, _ = brush.pos
+    planner = Planner(scene)
+    run(ctl, planner, [Phase("above", {"left": Goal(p=[x + 0.06, y, 0.08], pitch="steep", yaw=brush.yaw + 90, width=60)}),
+                       Phase("down", {"left": Goal(p=[x + 0.06, y, 0.012], pitch="steep")}),
+                       Phase("close", {"left": Goal(width=0)})])
+    assert "left" in brush.held
+    q = ctl.snapshot()["goal"]["left"].copy()
+    q[0] += 25  # swing the base and the wrist fast, with the brush held at its end
+    q[4] += 40
+    run(ctl, planner, [Phase("swing", {"left": Goal(joints=q[:5], line=False)}, speed="fast")])
+    assert "left" in brush.held
+    ctl.close()
