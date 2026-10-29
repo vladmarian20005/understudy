@@ -122,6 +122,26 @@ def test_stop_ends_a_policy(core, monkeypatch):
     assert core.start_skill("home", {})["ok"]
 
 
+def test_a_stop_during_an_inference_wins(core, monkeypatch):
+    """A step whose inference was running when the stop came doesn't stream afterwards (the arms would stay in policy
+    mode and refuse the next skill)."""
+    import threading
+    inferring, stopped = threading.Event(), threading.Event()
+
+    def slow(state):
+        inferring.set()
+        stopped.wait(5)
+        return state
+
+    fake_policy(monkeypatch, core, slow)
+    assert core.handle(dict(cmd="policy_start", path="fake"))["ok"]
+    assert inferring.wait(5)
+    assert core.handle(dict(cmd="policy_stop", reason="test"))["ok"]
+    stopped.set()
+    time.sleep(0.2)
+    assert not core.ctl.target and core.start_skill("home", {})["ok"]
+
+
 def test_check_pose_accepts_home_and_refuses_collisions(core):
     snap = core.ctl.snapshot()["q"]
     assert policy.check_pose(core.scene, snap) is None

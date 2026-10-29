@@ -187,7 +187,11 @@ class PolicyRunner:
         if why is not None:
             self.stop(f"refused a pose: {why}")
             return
-        if not core.ctl.stream(targets):
+        with self.lock:  # a stop that came in during the inference wins: nothing streams after it
+            if self.run is not r:
+                return
+            streamed = core.ctl.stream(targets)
+        if not streamed:
             self.stop("the controller won't stream (torque off or a plan running)")
             return
         r["steps"] += 1
