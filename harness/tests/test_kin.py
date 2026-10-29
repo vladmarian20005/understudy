@@ -96,12 +96,14 @@ def test_half_a_turn_of_the_wrist_is_the_same_grasp():
     from harness.scene import Scene
 
     arm = Scene().arms["left"]
-    q = np.array([10.0, -20.0, 15.0, 70.0, 120.0])
-    c = arm.canonical_roll(q)
-    assert -90 < c[4] <= 90 and c[4] == pytest.approx(-60)
-    p1, pitch1, yaw1 = arm.pose(q)
-    p2, pitch2, yaw2 = arm.pose(c)
-    assert np.allclose(p1, p2) and pitch1 == pytest.approx(pitch2) and yaw1 == pytest.approx(yaw2)
+    for q in ([10.0, -20.0, 15.0, 70.0, 120.0], [10.0, -20.0, 15.0, 70.0, -60.0], [-5, 10, -30, 80, 30]):
+        q = np.array(q)
+        c = arm.canonical_roll(q)
+        assert (arm.tool(c)[1] @ arm.jaw)[1] >= 0  # the jaw axis points away from the bases
+        p1, pitch1, yaw1 = arm.pose(q)
+        p2, pitch2, yaw2 = arm.pose(c)
+        assert np.allclose(p1, p2) and pitch1 == pytest.approx(pitch2) and yaw1 == pytest.approx(yaw2)
+        assert c[4] == pytest.approx(q[4]) or abs(c[4] - q[4]) == pytest.approx(180)
 
 
 def test_the_roll_is_canonical_even_with_another_joint_at_its_limit():
@@ -109,4 +111,5 @@ def test_the_roll_is_canonical_even_with_another_joint_at_its_limit():
 
     arm = Scene().arms["right"]
     q = np.array([10.0, -20.0, 15.0, arm.limits[3, 1] + 0.2, -104.7])  # wrist flex just past its limit
-    assert arm.canonical_roll(q)[4] == pytest.approx(75.3)
+    c = arm.canonical_roll(q)
+    assert (arm.tool(c)[1] @ arm.jaw)[1] >= 0

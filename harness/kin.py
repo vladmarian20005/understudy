@@ -114,16 +114,21 @@ class Arm:
     def to_deg(self, q_urdf):
         return np.degrees(np.asarray(q_urdf, dtype=float) * self.signs - self.offsets)
 
-    def canonical_roll(self, q_deg):
-        """The same pose with the wrist roll in (-90, 90] where the joint allows. Half a turn of the roll leaves the
-        fingertip point and the jaw line where they are, so for the symmetric parallel gripper both are the same grasp;
-        picking one every time keeps the demonstrations consistent (a policy averaging two rolls 180 deg apart lands
-        on neither)."""
+    def canonical_roll(self, q_deg, toward=(0.0, 1.0, 0.0)):
+        """The same grasp with the wrist rolled so the jaw axis points along `toward` (world; default +y, away from
+        the bases), where the joint allows. Half a turn of the roll leaves the fingertip point and the jaw line where
+        they are, so for the symmetric parallel gripper both rolls are the same grasp; choosing by the jaw's direction
+        keeps the demonstrations consistent (a policy averaging two rolls 180 deg apart lands on neither) and each
+        wrist camera on the same side. Grasps here are across a long object lying mostly along x, so the jaw axis is
+        mostly along y and the choice is clear."""
         q = np.asarray(q_deg, dtype=float).copy()
-        if q[4] > 90 or q[4] <= -90:
-            alt = q.copy()
-            alt[4] += -180.0 if q[4] > 90 else 180.0
-            if self.limits[4, 0] <= alt[4] <= self.limits[4, 1]:  # only the roll changes
+        j = self.tool(q)[1] @ self.jaw
+        if j @ np.asarray(toward, dtype=float) >= 0:
+            return q
+        for turn in sorted((-180.0, 180.0), key=lambda d: abs(q[4] + d)):  # only the roll changes
+            if self.limits[4, 0] <= q[4] + turn <= self.limits[4, 1]:
+                alt = q.copy()
+                alt[4] += turn
                 return alt
         return q
 
