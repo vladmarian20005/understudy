@@ -27,6 +27,7 @@ GRIP_SPEED = 120.0  # mm/s
 FINGER_LEN = 0.04  # m: how far the fingers reach back from the fingertips
 PAD = 0.012  # m: half the finger pad's width
 MIN_OVERLAP = 0.003  # m: the fingers must reach this far below an object's top to hold it
+SQUARE_DEG = 20.0  # closing jaws turn a free object up to this far off square to them, as real flat pads do
 # deg per unit gravity torque (gravity.torque), per joint: the real arms sag 1-1.5 cm at the fingertips when extended
 SAG_COMPLIANCE = (0.0, 1200.0, 1300.0, 900.0, 0.0)
 FAULTS = ("miss", "slip", "camera", "bus")
@@ -68,6 +69,37 @@ class SimObject:
         """The object's width along direction d (m), at its rotation or R."""
         R = self.R if R is None else R
         return float(sum(abs(d @ R[:, i]) * s for i, s in enumerate(self.size)))
+
+    def grip_width(self, j, R=None):
+        """How far apart jaws closing along j stop on the object (m): the width of the slice between the finger pads,
+        so a long object crossed at an angle reads a little wider than square, not its whole length."""
+        R = self.R if R is None else R
+        c = np.abs(R.T @ j)
+        L, W, H = self.size
+        full = L * c[0] + W * c[1] + H * c[2]
+        if c[1] < 1e-6:
+            return float(full)
+        t = c[0] / c[1]  # tan of the angle between the jaw line and the width, in the length-width plane
+        return float(min(full, (W * math.hypot(1, t) + 2 * PAD * t) * math.hypot(c[0], c[1]) + H * c[2]))
+
+    def slice_centre(self, p, k):
+        """Where the plane through p across k (the finger pads' mid-plane) cuts the object's length axis (m)."""
+        u = self.R[:, 0]
+        if abs(u @ k) < 1e-6:
+            return self.pos.copy()
+        s = float(np.clip((p - self.pos) @ k / (u @ k), -self.size[0] / 2, self.size[0] / 2))
+        return self.pos + u * s
+
+    def square_to(self, j, pivot):
+        """Turn the object about the vertical through pivot so its width lies along the jaw line j, if it's within
+        SQUARE_DEG of that."""
+        off = math.degrees(math.atan2(j[1], j[0]) - math.atan2(self.R[1, 1], self.R[0, 1]))
+        off = (off + 90) % 180 - 90
+        if abs(off) <= SQUARE_DEG:
+            Rz = rot_z(off)
+            self.R = Rz @ self.R
+            self.pos = pivot + Rz @ (self.pos - pivot)
+            self.yaw += off
 
 
 def rot_z(deg):
@@ -163,17 +195,18 @@ class SimWorld:
         return p, R @ arm.jaw, -R[:, 2], T
 
     def _between(self, side, o, w):
-        """Whether o lies between this gripper's fingers when they are w mm apart (and how far off-centre it is)."""
+        """Whether o lies between this gripper's fingers when they are w mm apart (and how far off-centre the part
+        between the pads is)."""
         p, j, a, _ = self.tool(side)
         k = np.cross(a, j)
         d = o.pos - p
-        e_j, e_k = o.extent(j), o.extent(k)
-        along_j, along_k = d @ j, d @ k
+        e_j, e_k = o.grip_width(j), o.extent(k)
+        along_j, along_k = (o.slice_centre(p, k) - p) @ j, d @ k
         top = max(c[2] for c in o.corners())
         bottom = min(c[2] for c in o.corners())
         fingers_low, fingers_high = sorted([p[2], (p - a * FINGER_LEN)[2]])
         overlap = min(fingers_high, top) - max(fingers_low, bottom)
-        inside = abs(along_j) < w / 2000 and e_j <= w / 1000 + 0.002 and abs(along_k) <= e_k / 2 + PAD
+        inside = abs(along_j) + e_j / 2 <= w / 2000 and abs(along_k) <= e_k / 2 + PAD
         return inside and overlap >= MIN_OVERLAP and top - fingers_low >= MIN_OVERLAP, along_j, e_j
 
     def solid_in_the_way(self, side, q_now, q_next):
@@ -246,7 +279,7 @@ class SimWorld:
             if side in o.held:
                 # where the object is now, carried by these fingers (its own pose is only updated after the joints)
                 _, j, _, T = self.tool(side)
-                e = o.extent(j, (T @ o.held[side])[:3, :3]) * 1000
+                e = o.grip_width(j, (T @ o.held[side])[:3, :3]) * 1000
                 if w_next > e + 3:
                     self.release(side, o)
                     return None
@@ -255,14 +288,16 @@ class SimWorld:
             return None
         for o in self.objects:
             ok, along_j, e_j = self._between(side, o, w_now)
-            if ok and w_next <= e_j * 1000 <= w_now:
+            if ok and w_next <= (e_j + 2 * abs(along_j)) * 1000:  # the nearer finger reaches it
                 if self.fault("miss", what=f"{side} missed the {o.name}"):
                     return None
                 p, j, a, T = self.tool(side)
-                if not o.held:
-                    o.pos = o.pos - j * along_j  # the fingers centre it as they close
+                if not o.held:  # the fingers centre it and square it up as they close
+                    o.pos = o.pos - j * along_j
+                    o.square_to(j, o.slice_centre(p, np.cross(a, j)))
+                    e_j = o.grip_width(j)
                 o.held[side] = np.linalg.inv(T) @ o.T()
-                return e_j * 1000
+                return max(w_next, e_j * 1000)
         return None
 
     def release(self, side, o):

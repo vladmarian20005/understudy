@@ -147,6 +147,26 @@ def test_real_arm_goes_live_where_it_is():
     assert bus.calls[-1][2]["gripper"] == pytest.approx(100)
 
 
+def test_closing_jaws_square_up_a_skewed_brush(scene):
+    """Flat pads turn a free bar square as they close and stop at its width, not at its length across the jaw line
+    (what a policy's slightly-off grasp sees on the real gripper)."""
+    world = sim.SimWorld(scene, "brush", sag=False)
+    ctl = Controller(world.io, world, speed=0).start()
+    ctl.arm()
+    brush = world.objects[0]
+    x, y, _ = brush.pos
+    yaw0 = brush.yaw
+    planner = Planner(scene)
+    run(ctl, planner, [Phase("above", {"left": Goal(p=[x + 0.04, y, 0.08], pitch="steep", yaw=yaw0 + 90 + 12, width=60)}),
+                       Phase("down", {"left": Goal(p=[x + 0.04, y, 0.012], pitch="steep")}),
+                       Phase("close", {"left": Goal(width=0)})])
+    assert "left" in brush.held
+    assert ctl.snapshot()["q"]["left"][5] == pytest.approx(30, abs=3)  # the 3 cm width
+    turned = np.degrees(np.arctan2(brush.R[1, 0], brush.R[0, 0])) - yaw0
+    assert (turned + 90) % 180 - 90 == pytest.approx(12, abs=1.5)
+    ctl.close()
+
+
 def test_a_long_held_object_stays_held_while_the_wrist_turns(scene):
     """The fingers' grip on a long object is checked against where the object is now, not a tick ago."""
     world = sim.SimWorld(scene, "brush", sag=False)
