@@ -26,7 +26,9 @@ from .scene import SIDES
 
 TASK = "Pass the brush to the other arm"
 REFUSE_DEG = 15.0  # this far past a joint limit is a broken policy, not an overshoot
-TOUCH_FLOOR = -0.006  # m: fingertips may reach this far "into" the table, as a touch-down does (the table stops them)
+# m: fingertips may aim this far "into" the table: a scripted touch-down aims 1.5 cm below where it expects the table
+# and stops on contact, so the commands a policy learns from go there too (the table stops the fingers)
+TOUCH_FLOOR = -0.015
 FLOOR_SLACK = 0.002  # m below the planner's arm floor
 GAP_FRACTION = 0.5  # of the planner's arm gap
 
