@@ -163,6 +163,8 @@ class Publisher:
 
     def close(self):
         self.running = False
+        if getattr(self, "thread", None) is not None:  # let a frame being sent finish before its socket goes
+            self.thread.join(timeout=5)
         for s in self.socks.values():
             s.close()
 
