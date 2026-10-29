@@ -50,6 +50,7 @@ def main():
     ap.add_argument("--episodes", type=int, help="only the first N trainable episodes")
     ap.add_argument("--steps", type=int, default=30000)
     ap.add_argument("--batch-size", type=int, default=8)
+    ap.add_argument("--save-freq", type=int, default=5000, help="steps between checkpoints (~0.6 GB each for ACT)")
     ap.add_argument("--policy", default="act")
     ap.add_argument("--device", default="mps")
     ap.add_argument("--judged-only", action="store_true", help="only episodes the judge has labelled")
@@ -62,7 +63,7 @@ def main():
     if not eps:
         sys.exit(f"no trainable episodes in {root}")
     name = a.name or f"{a.policy}_{a.dataset}" + (f"_{a.episodes}" if a.episodes else "")
-    cmd = command(a.dataset, name, eps, a.steps, a.batch_size, a.policy, a.device)
+    cmd = command(a.dataset, name, eps, a.steps, a.batch_size, a.policy, a.device, a.save_freq)
     print(f"{len(eps)} trainable episodes of {len(glob.glob(os.path.join(root, 'sidecar', '*.json')))} -> outputs/{name}")
     if a.dry_run:
         print(" ".join(cmd))
