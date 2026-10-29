@@ -398,8 +398,16 @@ class Skills:
         except Fail as e:
             if "would hit the table" not in e.why:
                 raise
-            p_now = self.tool_T(arm, self.q()[arm])[:3, 3]
-            self.play(Phase("up", {arm: Goal(p=p_now + [0, 0, SWING_UP], pitch="steep", line=False)}), *over)
+            up = self.tool_T(arm, self.q()[arm])[:3, 3] + [0, 0, SWING_UP]
+            for goal in (dict(), dict(pitch="steep"), dict(pitch="steep", line=False)):  # straight up if it can
+                try:
+                    self.play(Phase("up", {arm: Goal(p=up, **goal)}), *over)
+                    break
+                except Fail as e2:
+                    if e2.kind not in ("unreachable", "check"):
+                        raise
+            else:
+                raise Fail("check", f"{arm} can't lift the object clear of the table to carry it over")
         self.check_holding(arm, "slip")
         return self.release(arm, set_down=True)
 
