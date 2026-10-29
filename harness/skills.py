@@ -172,15 +172,16 @@ class Skills:
     # ---- grasp geometry -------------------------------------------------------------------------------------------
     def grasp_spots(self, side, d):
         """Where to pinch a detected object, best first: (point m, jaw yaw, opening mm, tip height m). A long object
-        is held near an end, the one closer to this arm first, so the rest stays free for a pass; its middle is the
-        last resort (an end can sit too close to the base to reach)."""
+        is held near an end, the one on this arm's side first (sideways, so it's the same end however the object is
+        turned: a policy learns one grasp, not two), so the rest stays free for a pass; its middle is the last resort
+        (an end can sit too close to the base to reach)."""
         L, W, H = (v / 100 for v in d["size_cm"])
         c = np.array(d["center_cm"]) / 100
         u = np.array([math.cos(math.radians(d["yaw"])), math.sin(math.radians(d["yaw"]))])
         points = [c]
         if L >= LONG * W:
             s = L / 2 - min(END_MARGIN, L / 4)
-            ends = sorted([c + u * s, c - u * s], key=lambda e: np.linalg.norm(e - self.scene.base_xy(side)))
+            ends = sorted([c + u * s, c - u * s], key=lambda e: abs(e[0] - self.scene.base_xy(side)[0]))
             points = ends + [c]
         z = float(np.clip(H * 0.4, 0.008, 0.03))
         return [(p, (d["yaw"] + 90) % 180, min(self.scene.stroke_mm, W * 1000 + 25), z) for p in points]
@@ -220,17 +221,21 @@ class Skills:
                 point = point + np.array(offset, dtype=float) / 100
             g = np.array([point[0], point[1], gz])
             yaw = auto_yaw if want_yaw is None else want_yaw
-            try:
-                pitch, hover, _, q_hover = self.approach(arm, g, yaw, z / 100)
-                break
-            except Fail as e:
-                err = e
+            for hz in (z, 0.7 * z, 0.5 * z):  # close in front of the base a high hover doesn't reach: lower, same spot
+                try:
+                    pitch, hover, _, q_hover = self.approach(arm, g, yaw, hz / 100)
+                    break
+                except Fail as e:
+                    err = e
+            else:
+                continue
+            break
         else:
             raise err
         width = opening if width is None else width
         self.play(Phase("reach", {arm: Goal(joints=q_hover, line=False,
                                             width=self.scene.stroke_mm if width is None else width)}))
-        self.reached[arm] = dict(obj=d, point=g, hover=hover, pitch=pitch, yaw=yaw)
+        self.reached[arm] = dict(obj=d, point=g, hover=hover, pitch=pitch, yaw=yaw, q_hover=q_hover)
         return {}
 
     def grasp(self, arm, width=None, offset=None):
@@ -271,17 +276,27 @@ class Skills:
             T_obj, size, name = self.tool_T(arm), [w / 1000] * 3, "object"
         self.core.holding[arm] = dict(name=name, size=size, rel=np.linalg.inv(self.tool_T(arm)) @ T_obj,
                                       grasp_z=float(g[2]), width=w)
-        self.lift(arm, hover, r["pitch"])
+        self.lift(arm, hover, r["pitch"], r.get("q_hover"))
         return self.check_holding(arm, "slip")
 
-    def lift(self, arm, p, pitch):
-        """Up to p at the approach's pitch, or as steep as reaches if that's just out of reach from here."""
+    def lift(self, arm, p, pitch, q_back=None):
+        """Up to p at the approach's pitch; if that line is just out of reach, back to the joints it came down from
+        (q_back), then as steep as reaches. A fresh solution for the way up can have the wrist turned the other way
+        round, which swings a long held object's far end through the table."""
         try:
             self.play(Phase("lift", {arm: Goal(p=p, pitch=pitch)}))
+            return
         except Fail as e:
             if e.kind != "unreachable":
                 raise
-            self.play(Phase("lift", {arm: Goal(p=p, pitch="steep", line=False)}))
+        if q_back is not None:
+            try:
+                self.play(Phase("lift", {arm: Goal(joints=q_back, line=False)}))
+                return
+            except Fail as e:
+                if e.kind not in ("unreachable", "check"):
+                    raise
+        self.play(Phase("lift", {arm: Goal(p=p, pitch="steep", line=False)}))
 
     def check_holding(self, arm, kind):
         w = self.width(arm)

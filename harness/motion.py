@@ -25,6 +25,9 @@ ARM_FLOOR = 0.02  # m: the rest of the arm stays this high
 ARM_GAP = 0.015  # m between the two arms' outlines
 RADII = (0.025, 0.025, 0.025, 0.03, 0.035)  # m: shoulder-upper arm, upper arm-elbow, forearm, wrist, gripper
 CARRY_FLOOR = 0.005  # m: a held object's lowest corner stays this high, except in a phase that lowers the floor
+# m: one that starts lower (just picked up, or being set down) may go this much lower still: lifted by one end, a long
+# object's other end pivots on the table, and the plan's few mm into it are the table pushing it up
+PIVOT_SLACK = 0.003
 Z_MAX = 0.40
 
 
@@ -210,7 +213,7 @@ class Planner:
                     low = float(np.min(held_corners(T, held)[:, 2]))
                     # a touch-down lowers it until it rests on something, aiming below the table to find it
                     floor = carry_floor.setdefault(s, -0.04 if phase.stop_on_contact
-                                                   else min(CARRY_FLOOR, floors[s], low - 0.001))
+                                                   else min(CARRY_FLOOR, floors[s], low - PIVOT_SLACK))
                     if low < floor - 1e-4:
                         raise PlanError("check", f"{phase.name}: the object {s} holds would hit the table "
                                         f"({low * 100:.1f} cm)", phase.name)
