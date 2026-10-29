@@ -209,7 +209,7 @@ class Planner:
                     T[:3, :3], T[:3, 3] = R_t, p_t
                     low = float(np.min(held_corners(T, held)[:, 2]))
                     # a touch-down lowers it until it rests on something, aiming below the table to find it
-                    floor = carry_floor.setdefault(s, -0.025 if phase.stop_on_contact
+                    floor = carry_floor.setdefault(s, -0.04 if phase.stop_on_contact
                                                    else min(CARRY_FLOOR, floors[s], low - 0.001))
                     if low < floor - 1e-4:
                         raise PlanError("check", f"{phase.name}: the object {s} holds would hit the table "

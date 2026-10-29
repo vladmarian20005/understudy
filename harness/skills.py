@@ -128,7 +128,12 @@ class Skills:
             except PlanError as e:  # the current pitch doesn't reach that low: as steep as reaches there
                 if e.kind != "unreachable" or "pitch" in goal:
                     raise
-                trajs = plan(pitch="steep")
+                try:
+                    trajs = plan(pitch="steep")
+                except PlanError as e2:  # close to the base a straight line can't be followed: a short joint move
+                    if e2.kind != "unreachable":
+                        raise
+                    trajs = plan(pitch="steep", line=False)
         except PlanError as e:
             raise Fail(e.kind, e.why)
         ok, why = self.core.ctl.play(trajs, self.core.cancel)
