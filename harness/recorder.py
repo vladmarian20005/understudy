@@ -3,7 +3,7 @@
 episode_begin starts sampling on the controller's clock at 30 fps: the 12 joint positions as the state, the 12 goals
 as the action (what robotd commanded at that moment), and the three cameras. episode_end writes the episode, closes
 the dataset so it's complete on disk, and writes the label's robot section to datasets/<name>/sidecar/<episode>.json.
-episode_label stores the vision and judge sections, and once the judge has spoken, the final training decision.
+episode_label stores the vision, judge and agents sections, and once the judge has spoken, the final training decision.
 
 Units in the dataset: joints in lerobot degrees, the gripper 0-100 (0 = closed), like lerobot's SO-101 recordings.
 """
@@ -154,8 +154,8 @@ class Recorder:
         return dict(ok=True, episode=ep["index"], frames=ep["frames"], duration_s=round(duration, 2), sidecar=path)
 
     def label(self, episode, section, data):
-        if section not in ("vision", "judge"):
-            return dict(ok=False, errors=["section must be vision or judge"])
+        if section not in ("vision", "judge", "agents"):
+            return dict(ok=False, errors=["section must be vision, judge or agents"])
         path = self._label_path(int(episode))
         if not os.path.exists(path):
             return dict(ok=False, errors=[f"no episode {episode} in {self.root}"])
