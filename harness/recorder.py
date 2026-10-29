@@ -28,6 +28,9 @@ CAM_KEYS = {"overhead": "left_overhead", "left_wrist": "left_wrist", "right_wris
 RECORD_SIZE = (640, 480)
 NAMES = [f"{s}_{j}.pos" for s in SIDES for j in JOINTS + ["gripper"]]
 CHECK_CM = 3.0  # robotd's own check: the object ends this close to the target, in no gripper
+# an episode nobody ends (its brain crashed, or gave up waiting for episode_begin) is ended by robotd after this long,
+# as invalid: left recording, it fills the disk with frames
+MAX_EPISODE_S = 180.0
 REVIEW_CONFIDENCE = 0.7
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATASETS = os.path.join(os.path.dirname(HERE), "datasets")
@@ -167,6 +170,13 @@ class Recorder:
     # ---- sampling -------------------------------------------------------------------------------------------------
     def _tick(self, t, q, goal):
         if not self.active() or t + 1e-9 < self.next_t:
+            return
+        if t - self.t0 > MAX_EPISODE_S:
+            if not self.ep.get("overrun"):
+                self.ep["overrun"] = True
+                note = f"no episode_end within {MAX_EPISODE_S:.0f} s: robotd ended it"
+                self.core.event(f"episode {self.ep['index']}: {note}", "warn")
+                threading.Thread(target=self.end, kwargs=dict(valid=False, note=note), daemon=True).start()
             return
         self.next_t += 1.0 / FPS
         snap = self.core.world.snapshot() if self.core.world is not None else None

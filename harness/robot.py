@@ -111,8 +111,8 @@ def stop(reason="stop requested"):
 
 
 def episode_begin(task, source=None, giver=None, taker=None, target_cm=None):
-    return call("episode_begin", task=task, source=source or {"kind": "pingpong"}, giver=giver, taker=taker,
-                target_cm=target_cm)
+    return call("episode_begin", timeout_s=60, task=task, source=source or {"kind": "pingpong"}, giver=giver,
+                taker=taker, target_cm=target_cm)
 
 
 def episode_end(valid=True, note=None):

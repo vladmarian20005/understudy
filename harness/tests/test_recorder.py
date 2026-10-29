@@ -76,6 +76,21 @@ def test_episodes_append(core):
     assert LeRobotDataset("local/test_pass", root=core.recorder.root).num_episodes == 2
 
 
+def test_an_episode_nobody_ends_is_ended_as_invalid(core, monkeypatch):
+    """A brain that dies mid-episode doesn't leave robotd recording frames until the disk is full."""
+    from harness import recorder
+    monkeypatch.setattr(recorder, "MAX_EPISODE_S", 2.0)
+    assert core.handle(dict(cmd="episode_begin", task="t"))["ok"]
+    end = time.monotonic() + 30
+    while core.recorder.active() or core.recorder.ep is not None:
+        assert time.monotonic() < end
+        time.sleep(0.05)
+    label = json.load(open(core.recorder._label_path(0)))
+    assert label["robot"]["valid"] is False and "no episode_end" in label["robot"]["note"]
+    assert label["frames"] <= 2 * 30 + 2
+    assert core.handle(dict(cmd="episode_begin", task="t"))["ok"]  # and the next one can start
+
+
 def test_commands_in_the_wrong_order(core):
     assert not core.handle(dict(cmd="episode_end"))["ok"]
     assert core.handle(dict(cmd="episode_begin", task="t"))["ok"]
