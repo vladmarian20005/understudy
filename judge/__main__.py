@@ -37,6 +37,18 @@ def labels(root, episodes=None):
     return out
 
 
+def check_dataset(name):
+    """robotd stores the verdict in the dataset it was started with, whichever one we read: refuse to judge when it
+    says (status' "dataset") that it's on another one, or the verdicts would land on the wrong episodes."""
+    try:
+        have = robot.status().get("dataset")
+    except robot.RobotdDown as e:
+        raise SystemExit(f"{e}\n(--no-send judges without robotd, keeping the verdicts in logs/judge/)")
+    if have is not None and have != name:
+        raise SystemExit(f"robotd is on dataset {have!r}, not {name!r}: restart it with --dataset {name}, "
+                         f"or use --no-send")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--dataset", default="understudy_pass", help="its name under datasets/")
@@ -65,6 +77,8 @@ def main():
         return
     if not todo:
         return
+    if not a.no_send:
+        check_dataset(a.dataset)
 
     model = llms.backend(a.llm)
     scene = Scene()

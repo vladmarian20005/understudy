@@ -75,6 +75,18 @@ def test_it_asks_again_once_then_gives_up():
         judge(LABEL, blank(), Scripted(["no", [("look", {})]]), log=lambda s: None)
 
 
+def test_it_wont_send_verdicts_to_robotd_on_another_dataset(monkeypatch):
+    from harness import robot
+    from judge.__main__ import check_dataset
+
+    monkeypatch.setattr(robot, "status", lambda since=0: {"ok": True, "dataset": "understudy_pass"})
+    check_dataset("understudy_pass")
+    with pytest.raises(SystemExit, match="restart it with --dataset sim_pass"):
+        check_dataset("sim_pass")
+    monkeypatch.setattr(robot, "status", lambda since=0: {"ok": True})  # a robotd that doesn't say: trusted
+    check_dataset("sim_pass")
+
+
 # ---- a real episode, through the simulator and lerobot ----------------------------------------------------------
 def run(core, name, **args):
     assert core.start_skill(name, args)["ok"]
