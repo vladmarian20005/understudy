@@ -8,3 +8,5 @@ datasets/
 outputs/
 *.mp4
 clips/
+sam_out/
+.sam31_budget.json
