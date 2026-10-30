@@ -17,6 +17,18 @@ from sam_pipeline.sources import VideoLibrary
 from sam_pipeline.video import cut_clip, probe
 
 
+def handover_summary(p: dict | None, track, fps: float) -> dict | None:
+    """The score's handover block (watch/SCORE.md): when both start holding, when the giver lets go, how long both
+    hold, and where the object was meanwhile (its mask centroid nearest the middle of the pass)."""
+    if p is None:
+        return None
+    mid = round((p["t"] + p["t_end"]) / 2 * fps)
+    near = min(track, key=lambda d: abs(d.frame - mid), default=None)
+    return {"t": p["t"], "t_end": p["t_end"], "both_s": round(p["t_end"] - p["t"], 2),
+            "at_px": [round(near.centroid[0]), round(near.centroid[1])] if near is not None else None,
+            "at_cm": None}
+
+
 def run_ego4d(args, budget: Budget) -> None:
     clips = select_clips(args.metadata, args.narrations, args.before, args.after, args.any_object)
     print(f"{len(clips)} hand-to-hand passes found in crafting videos")
@@ -93,11 +105,15 @@ def run_ego4d(args, budget: Budget) -> None:
             "version": 1,
             "kind": "score",
             "task": f"Pass the {c.prompt} to the other arm",
+            "object": {"name": c.prompt, "prompt": a.object_prompt or c.prompt},
             "source": {"kind": "ego4d", "video_uid": c.video_uid, "start_s": c.start, "end_s": c.end,
                        "narration": c.narration, "narration_t": round(c.narration_t - c.start, 2),
                        "file": src.path.name, "file_offset_s": round(src.local(c.start), 2)},
+            "frame": "ego",  # a head-mounted camera: pixels don't map to the table (watch/SCORE.md)
             "fps": fps, "frames": n, "size_px": [w, h],
             "giver": giver, "taker": taker,
+            "handover": handover_summary(passes[0] if passes else None, a.track, fps),
+            "target_cm": None,
             "vision": {"model": MODEL, "objects": objects, "events": events},
             "steps": steps_from_events(events, giver, taker),
             "quality": {
