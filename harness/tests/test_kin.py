@@ -92,10 +92,16 @@ def test_table_frame_matches_the_image(scene):
     assert math.isclose(scene.arms["left"].base[0, 3], -scene.arms["right"].base[0, 3], abs_tol=0.01)
 
 
+def symmetric(arm):
+    """The arm with a parallel gripper's tool point, on the roll axis."""
+    arm.tcp = np.array([0.0, 0.0, -0.12])
+    return arm
+
+
 def test_half_a_turn_of_the_wrist_is_the_same_grasp():
     from harness.scene import Scene
 
-    arm = Scene().arms["left"]
+    arm = symmetric(Scene().arms["left"])
     for q in ([10.0, -20.0, 15.0, 70.0, 120.0], [10.0, -20.0, 15.0, 70.0, -60.0], [-5, 10, -30, 80, 30]):
         q = np.array(q)
         c = arm.canonical_roll(q)
@@ -109,7 +115,17 @@ def test_half_a_turn_of_the_wrist_is_the_same_grasp():
 def test_the_roll_is_canonical_even_with_another_joint_at_its_limit():
     from harness.scene import Scene
 
-    arm = Scene().arms["right"]
+    arm = symmetric(Scene().arms["right"])
     q = np.array([10.0, -20.0, 15.0, arm.limits[3, 1] + 0.2, -104.7])  # wrist flex just past its limit
     c = arm.canonical_roll(q)
     assert (arm.tool(c)[1] @ arm.jaw)[1] >= 0
+
+
+def test_an_off_axis_tool_point_keeps_its_roll():
+    """The original gripper's tool point sits between its jaws, off the roll axis: half a turn would move it."""
+    from harness.scene import Scene
+
+    arm = Scene().arms["left"]
+    arm.tcp = np.array([0.027, 0.0, -0.104])
+    q = np.array([10.0, -20.0, 15.0, 70.0, -60.0])
+    assert np.array_equal(arm.canonical_roll(q), q)
