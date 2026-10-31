@@ -1,0 +1,9 @@
+{
+  "model": "muse-spark-1.3",
+  "summary": "right hand picks up the tube, left hand picks up a ball, puts it in the tube, picks up a ball, puts it in the tube, picks up a ball, puts it in the tube, picks up a ball, puts it in the tube, right hand sets the tube down",
+  "objects": [
+    "tube",
+    "ball"
+  ],
+  "raw": "SUMMARY: right hand picks up the tube, left hand picks up a ball, puts it in the tube, picks up a ball, puts it in the tube, picks up a ball, puts it in the tube, picks up a ball, puts it in the tube, right hand sets the tube down\nOBJECTS: tube\tball"
+}
