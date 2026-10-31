@@ -16,6 +16,7 @@ LEADER_CALIB_DIR = os.path.join(os.path.dirname(os.path.dirname(CALIB_DIR)), "te
 GRIPPER_TORQUE = dict(Max_Torque_Limit=700, Protection_Current=350, Overload_Torque=40)  # lerobot's 500/250/25 slip
 P_GAIN, D_GAIN = 16, 32
 RETRIES = 2  # a garbled status packet is retried before it counts as a failed read
+CURRENT_MA = 6.5  # mA per Present_Current count
 
 
 class CalibrationMismatch(Exception):
@@ -92,6 +93,18 @@ class BusArmIO:
         self.fresh()
         t = self.bus.sync_read("Present_Temperature", normalize=False, num_retry=RETRIES)
         return [float(t[m]) for m in self.names]
+
+    def grip_current(self):
+        """The gripper motor's current, mA: how hard the jaws are pushing."""
+        self.fresh()
+        return abs(float(self.bus.read("Present_Current", "gripper", normalize=False, num_retry=RETRIES))) * CURRENT_MA
+
+    def grip_torque(self, pct):
+        """Cap the gripper motor's torque at pct % of its maximum (the RAM limit, live at once): the jaws stop on
+        whatever pushes back harder, so this is how hard they can squeeze. 31 Oct: at the 70% GRIPPER_TORQUE allows,
+        closing on a tennis ball crushed it 25 mm and the fingers creaked."""
+        self.bus.write("Torque_Limit", "gripper", int(round(float(np.clip(pct, 0, 100)) * 10)), normalize=False,
+                       num_retry=RETRIES)
 
     def close(self, torque_off=True):
         self.bus.disconnect(disable_torque=torque_off)

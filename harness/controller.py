@@ -105,6 +105,8 @@ class Controller:
         self.t = 0.0
         self.lag = {s: 0 for s in ios}
         self.temps = {}
+        self.grip_ma = {}  # side -> its gripper motor's current, mA, as last read (real arms)
+        self.grip_peak = {}  # side -> the highest since grip_force last started a new peak
         self.running = True
         self.thread = threading.Thread(target=self._loop, daemon=True, name="control")
 
@@ -161,7 +163,16 @@ class Controller:
         with self.lock:
             return dict(t=self.t, q={s: v.copy() for s, v in self.q.items()},
                         goal={s: v.copy() for s, v in self.goal.items()}, mode=dict(self.mode),
-                        temps=dict(self.temps))
+                        temps=dict(self.temps), grip_ma=dict(self.grip_ma), grip_peak=dict(self.grip_peak))
+
+    def grip_force(self, side, pct):
+        """Cap side's gripper torque at pct % of the motor's (real arms; the simulator's jaws have no force) and start
+        a new current peak."""
+        with self.lock:
+            io = self.ios[side]
+            if hasattr(io, "grip_torque"):
+                io.grip_torque(pct)
+            self.grip_peak[side] = 0.0
 
     # ---- torque ---------------------------------------------------------------------------------------------------
     def arm(self):
@@ -306,6 +317,14 @@ class Controller:
                 if q is not None:
                     self.jumps[s] = 0
                     self.q[s] = q
+                if hasattr(io, "grip_current"):
+                    try:
+                        c = io.grip_current()
+                    except Exception:  # a missed current read only loses this tick's number: no reflex hangs on it
+                        c = None
+                    if c is not None:
+                        self.grip_ma[s] = c
+                        self.grip_peak[s] = max(self.grip_peak.get(s, 0.0), c)
             for s, lio in self.leaders.items():
                 lq = self._bus(s, lio.read, key=(s, "leader"))
                 if lq is not None:

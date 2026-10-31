@@ -181,6 +181,9 @@ class Core:
                           mode=snap["mode"][s], joints=[round(float(v), 1) for v in q[:5]])
             if s in snap["temps"]:
                 out[s]["temp_c"] = max(snap["temps"][s])
+            if s in snap["grip_ma"]:  # the gripper motor's current now, and its peak since the last grip_force
+                out[s]["grip_ma"] = round(snap["grip_ma"][s])
+                out[s]["grip_peak_ma"] = round(snap["grip_peak"].get(s, 0.0))
         return out
 
     def busy(self):
@@ -244,6 +247,11 @@ class Core:
             return dict(ok=True, objects=dets)
         if cmd == "skill":
             return self.start_skill(req.get("name"), req.get("args") or {})
+        if cmd == "grip_force":  # cap a gripper's torque, % of the motor's, and start a new current peak
+            if req.get("arm") not in SIDES:
+                return dict(ok=False, errors=["arm is left or right"])
+            self.ctl.grip_force(req["arm"], float(req.get("pct", 30)))
+            return dict(ok=True)
         if cmd == "stop":
             self.cancel.set()
             if self.policy.active():
