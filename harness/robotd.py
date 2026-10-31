@@ -56,7 +56,9 @@ class SimCameras:
         if down:
             raise CameraDown(f"{', '.join(down)}: no frame (simulated drop-out)")
         for n in names:
-            if n == "overhead":
+            if hasattr(self.world, "render"):  # the MuJoCo simulator renders its own cameras
+                out[n] = self.world.render(n, *self.sizes.get(n, (640, 480)), snap)
+            elif n == "overhead":
                 out[n] = sim.render(self.scene, snap, self.scene.camera)
             else:
                 side = n.split("_")[0]
@@ -72,7 +74,7 @@ class SimCameras:
 class Core:
     def __init__(self, sim_mode=True, speed=1.0, objects="brush", noise=0.0, arm=True, quiet=False,
                  dataset="understudy_pass", datasets=DATASETS, vision=False, stream_cameras=False, sag=True,
-                 faults=None):
+                 faults=None, hd=False):
         self.scene = Scene()
         self.quiet = quiet
         self.events = collections.deque(maxlen=500)
@@ -87,7 +89,12 @@ class Core:
         self.recorder = None
         self.sim = sim_mode
         if sim_mode:
-            self.world = sim.SimWorld(self.scene, objects, noise, sag=sag, faults=faults)
+            if hd:
+                from .mjsim import MjWorld
+
+                self.world = MjWorld(self.scene, objects, noise, sag=sag, faults=faults)
+            else:
+                self.world = sim.SimWorld(self.scene, objects, noise, sag=sag, faults=faults)
             self.world.on_fault = lambda kind, what: self.event(f"simulated fault: {what}", "warn")
             ios = self.world.io
             self.cameras = SimCameras(self.scene, self.world)
@@ -397,7 +404,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--sim", action="store_true", help="simulated arms, objects and cameras")
     ap.add_argument("--speed", type=float, default=1.0, help="simulator speed (1 = real time, 0 = flat out)")
-    ap.add_argument("--objects", default="brush", help=f"simulator scene: {', '.join(sim.SCENES)}")
+    ap.add_argument("--hd", action="store_true",
+                    help="simulator: the MuJoCo one (harness/mjsim.py): CAD arms, original gripper, physics, renders")
+    ap.add_argument("--objects", default="brush", help=f"simulator scene: {', '.join(sim.SCENES)} (--hd also balls)")
     ap.add_argument("--noise", type=float, default=0.0, help="simulated perception error, cm")
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--dataset", default="understudy_pass", help="episodes go to datasets/<name>")
@@ -412,7 +421,7 @@ def main():
     a = ap.parse_args()
     faults = {k: float(v) for k, v in (f.split("=") for f in a.faults.split(",") if f)}
     core = Core(a.sim, a.speed, a.objects, a.noise / 100, dataset=a.dataset, vision=a.vision,
-                stream_cameras=not a.no_camera_streams, sag=not a.no_sag, faults=faults)
+                stream_cameras=not a.no_camera_streams, sag=not a.no_sag, faults=faults, hd=a.hd)
     if a.sag_off:
         core.ctl.freeze_sag()
     quit_event = threading.Event()
