@@ -1,4 +1,5 @@
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import cv2
 import mujoco
@@ -60,6 +61,14 @@ def test_the_cameras_render_at_the_rig_sizes(world):
     for name, (w, h) in (("overhead", (640, 480)), ("left_wrist", (1024, 768)), ("right_wrist", (640, 480))):
         img = world.render(name, w, h, snap)
         assert img.shape == (h, w, 3) and img.std() > 10  # a picture, not a blank
+
+
+
+def test_cameras_render_from_several_threads_at_once(world):
+    """robotd renders for a request while the camera streams render: OpenGL from two threads used to deadlock."""
+    with ThreadPoolExecutor(4) as pool:
+        imgs = list(pool.map(lambda n: world.render(n, 640, 480), ["overhead", "left_wrist", "right_wrist"] * 4))
+    assert all(img.shape == (480, 640, 3) for img in imgs)
 
 
 def run(core, name, **args):
