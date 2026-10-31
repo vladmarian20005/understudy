@@ -47,6 +47,9 @@ SETTLE_TICKS = 50  # or after this long
 SETTLE_FAIL_DEG = 5.0  # still this far off by then: the arm is stuck (blocked), not slow
 TEMP_EVERY = 100  # ticks
 WARM_C, HOT_C = 55, 62
+TEMP_MAX_C = 100  # a reading above this is a garbled packet, not heat: the servo would be dead (31 Oct: 189-252 C)
+JUMP_DEG = 25.0  # no servo turns this far in one tick: a reading that jumps this far is garbled
+JUMP_TICKS = 3  # unless it keeps reading there
 TAKEOVER_DEG = 8.0
 RELEASE_S = 2.0
 LEADER_STILL_DEG = 1.0  # a leader that stays within this of where it stopped is resting
@@ -78,6 +81,9 @@ class Controller:
         self.sag = {s: SagModel() for s in ios}
         self.arms_k = {}  # side -> kin.Arm, for the gravity offsets (set_arms)
         self.still = {s: 0 for s in ios}  # ticks each arm's goal hasn't changed
+        self.free = {s: False for s in ios}  # it has moved since torque on: not still lying where it was switched off
+        self.jumps = {}  # side -> readings in a row that jumped impossibly far from the last good one
+        self.sag_learning = True
         self.contact = {}  # side -> where it last touched down (tip and lowest finger heights, m), until it moves
         self.touch = {s: 0 for s in ios}
         self.touch_base = {}
@@ -99,6 +105,8 @@ class Controller:
         self.t = 0.0
         self.lag = {s: 0 for s in ios}
         self.temps = {}
+        self.grip_ma = {}  # side -> its gripper motor's current, mA, as last read (real arms)
+        self.grip_peak = {}  # side -> the highest since grip_force last started a new peak
         self.running = True
         self.thread = threading.Thread(target=self._loop, daemon=True, name="control")
 
@@ -115,6 +123,13 @@ class Controller:
         """Leader arms (read-only ios, by side) whose movement takes their follower over."""
         self.leaders = dict(leaders)
         return self
+
+    def freeze_sag(self):
+        """No feed-forward and no learning, and nothing saved over the learned file (31 Oct: a model learned from
+        stalled arms pulled the stretched left arm about 4 cm short)."""
+        self.sag = {s: SagModel((0.0,) * 5) for s in self.ios}
+        self.sag_learning = False
+        self.sag_file = None
 
     def save_sag(self):
         if getattr(self, "sag_file", None):
@@ -148,7 +163,16 @@ class Controller:
         with self.lock:
             return dict(t=self.t, q={s: v.copy() for s, v in self.q.items()},
                         goal={s: v.copy() for s, v in self.goal.items()}, mode=dict(self.mode),
-                        temps=dict(self.temps))
+                        temps=dict(self.temps), grip_ma=dict(self.grip_ma), grip_peak=dict(self.grip_peak))
+
+    def grip_force(self, side, pct):
+        """Cap side's gripper torque at pct % of the motor's (real arms; the simulator's jaws have no force) and start
+        a new current peak."""
+        with self.lock:
+            io = self.ios[side]
+            if hasattr(io, "grip_torque"):
+                io.grip_torque(pct)
+            self.grip_peak[side] = 0.0
 
     # ---- torque ---------------------------------------------------------------------------------------------------
     def arm(self):
@@ -158,7 +182,11 @@ class Controller:
                 q = io.read()
                 self.q[s] = q
                 self.goal[s] = q.copy()
-                io.torque(True)
+                self.free[s] = False
+                try:
+                    io.torque(True)
+                except ConnectionError as e:
+                    raise ConnectionError(f"{s} arm: {e}") from e
                 self.mode[s] = "hold"
         self.on_event("armed: torque on, holding position")
 
@@ -282,8 +310,21 @@ class Controller:
         with self.lock:
             for s, io in self.ios.items():
                 q = self._bus(s, io.read)
+                if q is not None and np.max(np.abs(q[:5] - self.q[s][:5])) > JUMP_DEG:
+                    self.jumps[s] = self.jumps.get(s, 0) + 1
+                    if self.jumps[s] < JUMP_TICKS:
+                        q = None
                 if q is not None:
+                    self.jumps[s] = 0
                     self.q[s] = q
+                if hasattr(io, "grip_current"):
+                    try:
+                        c = io.grip_current()
+                    except Exception:  # a missed current read only loses this tick's number: no reflex hangs on it
+                        c = None
+                    if c is not None:
+                        self.grip_ma[s] = c
+                        self.grip_peak[s] = max(self.grip_peak.get(s, 0.0), c)
             for s, lio in self.leaders.items():
                 lq = self._bus(s, lio.read, key=(s, "leader"))
                 if lq is not None:
@@ -410,13 +451,16 @@ class Controller:
                 self.still[s] = 0
                 if moving:
                     self.contact.pop(s, None)
+                    self.free[s] = True
             else:
                 self.still[s] += 1
             holding = self.goal[s][5] < self.q[s][5] - SQUEEZING_MM
             if (self.mode[s] == "hold" and s in self.arms_k and s not in self.contact and not holding
                     and self.still[s] >= LEARN_AFTER and self.still[s] % LEARN_EVERY == 0):
                 arm = self.arms_k[s]
-                if arm.tool(self.q[s])[0][2] > LEARN_MIN_Z:
+                # not from an arm still lying where torque came on, folded up or on the table: 31 Oct that taught
+                # the model nonsense (the left shoulder ~0, the right one the maximum)
+                if self.sag_learning and arm.tool(self.q[s])[0][2] > LEARN_MIN_Z and self.free[s]:
                     self.sag[s].learn(arm, self.command(s), self.q[s])
         self._last_goal = {s: v.copy() for s, v in self.goal.items()}
 
@@ -435,7 +479,7 @@ class Controller:
         if self.ticks % TEMP_EVERY == 0:
             for s, io in self.ios.items():
                 temps = self._bus(s, io.temperatures)
-                if temps is None:
+                if temps is None or max(temps) > TEMP_MAX_C:
                     continue
                 self.temps[s] = temps
                 hot = max(temps)

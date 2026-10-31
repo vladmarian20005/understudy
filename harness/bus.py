@@ -16,6 +16,7 @@ LEADER_CALIB_DIR = os.path.join(os.path.dirname(os.path.dirname(CALIB_DIR)), "te
 GRIPPER_TORQUE = dict(Max_Torque_Limit=700, Protection_Current=350, Overload_Torque=40)  # lerobot's 500/250/25 slip
 P_GAIN, D_GAIN = 16, 32
 RETRIES = 2  # a garbled status packet is retried before it counts as a failed read
+CURRENT_MA = 6.5  # mA per Present_Current count
 
 
 class CalibrationMismatch(Exception):
@@ -43,7 +44,17 @@ class BusArmIO:
                                           "run lerobot-calibrate (and the gripper limits) first")
         self.bus = bus
 
+    def fresh(self):
+        """Drop bytes still waiting from an earlier request before reading: a reply that came in late is otherwise
+        taken as this request's (the SDK's clearPort only flushes output). 31 Oct: late position replies read as
+        temperatures of 189-252 C stopped nearly every motion as "hot", and late replies the other way round put the
+        fingertips 40 cm up."""
+        ser = getattr(getattr(self.bus, "port_handler", None), "ser", None)
+        if ser is not None:
+            ser.reset_input_buffer()
+
     def read(self):
+        self.fresh()
         pos = self.bus.sync_read("Present_Position", num_retry=RETRIES)
         return np.array([pos[j] for j in JOINTS] + [pos["gripper"] / 100 * self.stroke], dtype=float)
 
@@ -54,26 +65,46 @@ class BusArmIO:
 
     def torque(self, on):
         if not on:
-            self.bus.disable_torque()
+            self.bus.disable_torque(num_retry=RETRIES)
             return
         from lerobot.motors.feetech import OperatingMode
 
-        self.bus.disable_torque()
-        self.bus.configure_motors()
-        for m in self.names:
-            self.bus.write("Operating_Mode", m, OperatingMode.POSITION.value)
-            self.bus.write("P_Coefficient", m, P_GAIN)
-            self.bus.write("I_Coefficient", m, 0)
-            self.bus.write("D_Coefficient", m, D_GAIN)
-        for reg, v in GRIPPER_TORQUE.items():
-            self.bus.write(reg, "gripper", v)
-        here = self.bus.sync_read("Present_Position")
-        self.bus.sync_write("Goal_Position", here)
-        self.bus.enable_torque()
+        # a garbled status packet part way (31 Oct: 'Lock' on id 2) runs the whole sequence again, from torque off
+        for attempt in range(RETRIES + 1):
+            try:
+                self.bus.disable_torque(num_retry=RETRIES)
+                self.bus.configure_motors()
+                for m in self.names:
+                    self.bus.write("Operating_Mode", m, OperatingMode.POSITION.value, num_retry=RETRIES)
+                    self.bus.write("P_Coefficient", m, P_GAIN, num_retry=RETRIES)
+                    self.bus.write("I_Coefficient", m, 0, num_retry=RETRIES)
+                    self.bus.write("D_Coefficient", m, D_GAIN, num_retry=RETRIES)
+                for reg, v in GRIPPER_TORQUE.items():
+                    self.bus.write(reg, "gripper", v, num_retry=RETRIES)
+                here = self.bus.sync_read("Present_Position", num_retry=RETRIES)
+                self.bus.sync_write("Goal_Position", here, num_retry=RETRIES)
+                self.bus.enable_torque(num_retry=RETRIES)
+                return
+            except ConnectionError:
+                if attempt == RETRIES:
+                    raise
 
     def temperatures(self):
+        self.fresh()
         t = self.bus.sync_read("Present_Temperature", normalize=False, num_retry=RETRIES)
         return [float(t[m]) for m in self.names]
+
+    def grip_current(self):
+        """The gripper motor's current, mA: how hard the jaws are pushing."""
+        self.fresh()
+        return abs(float(self.bus.read("Present_Current", "gripper", normalize=False, num_retry=RETRIES))) * CURRENT_MA
+
+    def grip_torque(self, pct):
+        """Cap the gripper motor's torque at pct % of its maximum (the RAM limit, live at once): the jaws stop on
+        whatever pushes back harder, so this is how hard they can squeeze. 31 Oct: at the 70% GRIPPER_TORQUE allows,
+        closing on a tennis ball crushed it 25 mm and the fingers creaked."""
+        self.bus.write("Torque_Limit", "gripper", int(round(float(np.clip(pct, 0, 100)) * 10)), normalize=False,
+                       num_retry=RETRIES)
 
     def close(self, torque_off=True):
         self.bus.disconnect(disable_torque=torque_off)

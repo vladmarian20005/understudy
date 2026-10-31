@@ -76,7 +76,7 @@ class Muse:
     def chat(self, system, messages, tools):
         t0 = time.time()
         r = self.client.chat.completions.create(model=self.model, messages=[dict(role="system", content=system)]
-                                                + messages, tools=tools, parallel_tool_calls=False)
+                                                + messages, tools=tools)
         m = r.choices[0].message
         calls = [dict(id=tc.id, type="function", function=dict(name=tc.function.name,
                                                                 arguments=tc.function.arguments))

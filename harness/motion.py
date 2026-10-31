@@ -186,21 +186,29 @@ class Planner:
     def check(self, traj, phase):
         sides = list(traj.rows)
         n = len(traj.rows[sides[0]])
-        floors = {s: (phase.goals[s].floor if s in phase.goals else TIP_FLOOR) for s in sides}
+        # an arm may start past a joint limit or low (folded up, or resting on the table after torque off): it can
+        # move back in, but no further out than it started
+        start = {s: np.asarray(traj.rows[s][0], dtype=float)[:5] for s in sides}
+        lo = {s: np.minimum(self.scene.arms[s].limits[:, 0], start[s]) - 0.5 for s in sides}
+        hi = {s: np.maximum(self.scene.arms[s].limits[:, 1], start[s]) + 0.5 for s in sides}
+        pts0 = {s: self.scene.arms[s].points(traj.rows[s][0]) for s in sides}
+        floors = {s: min(phase.goals[s].floor if s in phase.goals else TIP_FLOOR, pts0[s][-1][2]) for s in sides}
+        arm_floors = {s: min(ARM_FLOOR, float(np.min(pts0[s][1:-1, 2]))) for s in sides}
         carry_floor = {}  # a held object may start low (just picked up, or set down) but not go lower
         for k in list(range(0, n, 2)) + [n - 1]:
             pts = {}
             for s in sides:
                 arm = self.scene.arms[s]
                 q = traj.rows[s][k]
-                if not arm.within_limits(q, slack=0.5):
+                q5 = np.asarray(q, dtype=float)[:5]
+                if np.any(q5 < lo[s]) or np.any(q5 > hi[s]):
                     raise PlanError("check", f"{phase.name}: {s} would pass a joint limit", phase.name)
                 pts[s] = arm.points(q)
                 tip = pts[s][-1]
                 if tip[2] < floors[s] - 1e-4:
                     raise PlanError("check", f"{phase.name}: {s} fingertips would go {tip[2] * 100:.1f} cm from "
                                     f"the table", phase.name)
-                if np.min(pts[s][1:-1, 2]) < ARM_FLOOR:
+                if np.min(pts[s][1:-1, 2]) < arm_floors[s]:
                     raise PlanError("check", f"{phase.name}: {s} arm would come within 2 cm of the table", phase.name)
                 if not self.scene.on_table(tip[:2]) or tip[2] > Z_MAX:
                     raise PlanError("check", f"{phase.name}: {s} fingertips would leave the workspace at "

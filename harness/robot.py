@@ -90,6 +90,12 @@ def place(arm, xy=None, on=None, yaw=None):
     return _motion("place", arm=arm, xy=xy, on=on, yaw=yaw)
 
 
+def grip_force(arm, pct):
+    """Cap arm's gripper torque at pct % of the motor's (how hard the jaws can squeeze) and start a new current peak
+    (status: arms.<arm>.grip_peak_ma)."""
+    return call("grip_force", arm=arm, pct=pct)
+
+
 def look(cams=("overhead",), annotate=True):
     return call("look", cams=list(cams), annotate=annotate)
 

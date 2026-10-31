@@ -119,13 +119,13 @@ class FakeBus:
     def sync_write(self, name, values, num_retry=0):
         self.calls.append(("sync_write", name, dict(values)))
 
-    def write(self, name, motor, value):
+    def write(self, name, motor, value, num_retry=0):
         self.calls.append(("write", name, motor))
 
-    def enable_torque(self):
+    def enable_torque(self, num_retry=0):
         self.calls.append(("torque", True))
 
-    def disable_torque(self):
+    def disable_torque(self, num_retry=0):
         self.calls.append(("torque", False))
 
     def configure_motors(self):

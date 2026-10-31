@@ -25,7 +25,7 @@ from . import overlay, sim
 from .cameras import CameraDown, Publisher, sizes as camera_sizes
 from .controller import Controller
 from .motion import Planner
-from .perception import SimPerception, TablePerception
+from .perception import ARM_COLOURS, SimPerception, TablePerception
 from .policy import TASK, PolicyRunner
 from .recorder import DATASETS, Recorder
 from .scene import SIDES, Scene
@@ -108,7 +108,8 @@ class Core:
             self.ctl.set_leaders(self.connect_leaders())
         self.ctl.start()
         if vision or not sim_mode:  # objects from the overhead image, as on the real arms
-            self.perception = TablePerception(self.scene, self.cameras, self.ctl, self.holding)
+            self.perception = TablePerception(self.scene, self.cameras, self.ctl, self.holding,
+                                              ignore_colours=() if sim_mode else ARM_COLOURS)
         self.planner = Planner(self.scene, self.holding)
         self.skills = Skills(self)
         self.policy = PolicyRunner(self)
@@ -180,6 +181,9 @@ class Core:
                           mode=snap["mode"][s], joints=[round(float(v), 1) for v in q[:5]])
             if s in snap["temps"]:
                 out[s]["temp_c"] = max(snap["temps"][s])
+            if s in snap["grip_ma"]:  # the gripper motor's current now, and its peak since the last grip_force
+                out[s]["grip_ma"] = round(snap["grip_ma"][s])
+                out[s]["grip_peak_ma"] = round(snap["grip_peak"].get(s, 0.0))
         return out
 
     def busy(self):
@@ -243,6 +247,11 @@ class Core:
             return dict(ok=True, objects=dets)
         if cmd == "skill":
             return self.start_skill(req.get("name"), req.get("args") or {})
+        if cmd == "grip_force":  # cap a gripper's torque, % of the motor's, and start a new current peak
+            if req.get("arm") not in SIDES:
+                return dict(ok=False, errors=["arm is left or right"])
+            self.ctl.grip_force(req["arm"], float(req.get("pct", 30)))
+            return dict(ok=True)
         if cmd == "stop":
             self.cancel.set()
             if self.policy.active():
@@ -329,7 +338,14 @@ def keyboard(core, quit_event):
         while not quit_event.is_set():
             ch = sys.stdin.read(1)
             if ch == "a":
-                core.ctl.arm()
+                try:
+                    core.ctl.arm()
+                except Exception as e:  # a bus error part way: nothing left half on, and the keys keep working
+                    print(f"[robotd] torque on failed ({e}): switching torque off, hold the arms", flush=True)
+                    try:
+                        core.ctl.disarm()
+                    except Exception as e2:
+                        print(f"[robotd] torque off failed too ({e2}): quit with Ctrl+C", flush=True)
             elif ch == " ":
                 core.cancel.set()
                 if core.policy.active():
@@ -363,10 +379,13 @@ def main():
     ap.add_argument("--faults", default="", metavar="KIND=P,...",
                     help=f"simulator: fault probabilities, kinds {', '.join(sim.FAULTS)} (e.g. miss=0.1,slip=0.02)")
     ap.add_argument("--trace", metavar="FILE", help="append every request and reply to FILE as JSON lines")
+    ap.add_argument("--sag-off", action="store_true", help="no gravity feed-forward and no sag learning")
     a = ap.parse_args()
     faults = {k: float(v) for k, v in (f.split("=") for f in a.faults.split(",") if f)}
     core = Core(a.sim, a.speed, a.objects, a.noise / 100, dataset=a.dataset, vision=a.vision,
                 stream_cameras=not a.no_camera_streams, sag=not a.no_sag, faults=faults)
+    if a.sag_off:
+        core.ctl.freeze_sag()
     quit_event = threading.Event()
     if sys.stdin.isatty():
         threading.Thread(target=keyboard, args=(core, quit_event), daemon=True).start()
