@@ -43,7 +43,17 @@ class BusArmIO:
                                           "run lerobot-calibrate (and the gripper limits) first")
         self.bus = bus
 
+    def fresh(self):
+        """Drop bytes still waiting from an earlier request before reading: a reply that came in late is otherwise
+        taken as this request's (the SDK's clearPort only flushes output). 31 Oct: late position replies read as
+        temperatures of 189-252 C stopped nearly every motion as "hot", and late replies the other way round put the
+        fingertips 40 cm up."""
+        ser = getattr(getattr(self.bus, "port_handler", None), "ser", None)
+        if ser is not None:
+            ser.reset_input_buffer()
+
     def read(self):
+        self.fresh()
         pos = self.bus.sync_read("Present_Position", num_retry=RETRIES)
         return np.array([pos[j] for j in JOINTS] + [pos["gripper"] / 100 * self.stroke], dtype=float)
 
@@ -72,6 +82,7 @@ class BusArmIO:
         self.bus.enable_torque()
 
     def temperatures(self):
+        self.fresh()
         t = self.bus.sync_read("Present_Temperature", normalize=False, num_retry=RETRIES)
         return [float(t[m]) for m in self.names]
 

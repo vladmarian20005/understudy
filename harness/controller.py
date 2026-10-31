@@ -47,6 +47,9 @@ SETTLE_TICKS = 50  # or after this long
 SETTLE_FAIL_DEG = 5.0  # still this far off by then: the arm is stuck (blocked), not slow
 TEMP_EVERY = 100  # ticks
 WARM_C, HOT_C = 55, 62
+TEMP_MAX_C = 100  # a reading above this is a garbled packet, not heat: the servo would be dead (31 Oct: 189-252 C)
+JUMP_DEG = 25.0  # no servo turns this far in one tick: a reading that jumps this far is garbled
+JUMP_TICKS = 3  # unless it keeps reading there
 TAKEOVER_DEG = 8.0
 RELEASE_S = 2.0
 LEADER_STILL_DEG = 1.0  # a leader that stays within this of where it stopped is resting
@@ -78,6 +81,7 @@ class Controller:
         self.sag = {s: SagModel() for s in ios}
         self.arms_k = {}  # side -> kin.Arm, for the gravity offsets (set_arms)
         self.still = {s: 0 for s in ios}  # ticks each arm's goal hasn't changed
+        self.jumps = {}  # side -> readings in a row that jumped impossibly far from the last good one
         self.contact = {}  # side -> where it last touched down (tip and lowest finger heights, m), until it moves
         self.touch = {s: 0 for s in ios}
         self.touch_base = {}
@@ -282,7 +286,12 @@ class Controller:
         with self.lock:
             for s, io in self.ios.items():
                 q = self._bus(s, io.read)
+                if q is not None and np.max(np.abs(q[:5] - self.q[s][:5])) > JUMP_DEG:
+                    self.jumps[s] = self.jumps.get(s, 0) + 1
+                    if self.jumps[s] < JUMP_TICKS:
+                        q = None
                 if q is not None:
+                    self.jumps[s] = 0
                     self.q[s] = q
             for s, lio in self.leaders.items():
                 lq = self._bus(s, lio.read, key=(s, "leader"))
@@ -435,7 +444,7 @@ class Controller:
         if self.ticks % TEMP_EVERY == 0:
             for s, io in self.ios.items():
                 temps = self._bus(s, io.temperatures)
-                if temps is None:
+                if temps is None or max(temps) > TEMP_MAX_C:
                     continue
                 self.temps[s] = temps
                 hot = max(temps)
