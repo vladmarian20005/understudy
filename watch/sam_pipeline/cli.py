@@ -39,6 +39,7 @@ Examples, from the repo root:
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -46,6 +47,7 @@ from pathlib import Path
 from sam_pipeline.budget import Budget
 from sam_pipeline.ego4d import run_ego4d
 from sam_pipeline.episode import run_episode
+from sam_pipeline.muse_mode import run_video
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -93,6 +95,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--holder-prompt", default="robot gripper")
     p.add_argument("--send", action="store_true", help="store it via harness.robot.episode_label")
 
+    v = sub.add_parser("video", help="any video: Muse Spark names the actions and objects, SAM segments them")
+    v.add_argument("--video", type=Path, required=True, help="the video to read")
+    v.add_argument("--object", help="skip Muse's choice and segment this concept instead")
+    v.add_argument("--max-objects", type=int, default=2, metavar="N",
+                   help="how many of Muse's objects to segment (default 2). Each is a billed SAM request")
+    v.add_argument("--holder-prompt", default="hand")
+    v.add_argument("--muse-model", default=os.environ.get("MUSE_MODEL", "muse-spark-1.3"))
+    v.add_argument("--muse-prompt", help="override the question put to Muse")
+    v.add_argument("--width", type=int, default=1280,
+                   help="width to re-encode at (default 1280); SAM is billed per frame, not per pixel")
+    v.add_argument("--remuse", action="store_true", help="re-ask Muse even if muse.json is cached (costs again)")
+
     return ap
 
 
@@ -105,7 +119,9 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     budget = Budget(args.budget_file, args.max_minutes * 60)
     print(f"SAM budget: {budget.used / 60:.1f} of {budget.limit_s / 60:.1f} min used ({args.budget_file})")
-    if args.mode == "ego4d":
+    if args.mode == "video":
+        run_video(args, budget)
+    elif args.mode == "ego4d":
         if not args.dry_run and not args.videos:
             sys.exit("--videos is required unless --dry-run")
         run_ego4d(args, budget)
