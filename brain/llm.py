@@ -88,6 +88,18 @@ class Muse:
         return Reply(m.content or "", parse_calls(calls), message, u.prompt_tokens if u else 0,
                      u.completion_tokens if u else 0, time.time() - t0, self.model)
 
+    def ask(self, system, messages, effort=None):
+        """A plain answer, no tools (the planner's JSON). effort: the model's reasoning effort ("high" to think a
+        plan through, "low" for quick checks); None: the model's default."""
+        t0 = time.time()
+        extra = {} if effort is None else {"reasoning_effort": effort}
+        r = self.client.chat.completions.create(model=self.model, messages=[dict(role="system", content=system)]
+                                                + messages, **extra)
+        text = r.choices[0].message.content or ""
+        u = r.usage
+        return Reply(text, [], dict(role="assistant", content=text), u.prompt_tokens if u else 0,
+                     u.completion_tokens if u else 0, time.time() - t0, self.model)
+
 
 class Scripted:
     """Plays back a list of replies, each text or (name, args) tool calls: for tests, no model involved."""

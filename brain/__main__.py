@@ -1,11 +1,13 @@
-"""Give the arms a task in words; a model looks through the cameras and drives them with robotd's primitives.
+"""Give the arms a task in words or a video of it; Muse plans it, the arms run the plan, Muse checks (brain/plan.py).
 
-    python -m brain "pass the brush to the other arm"             (robotd running: --sim or the real arms)
-    python -m brain "put the brush near the right arm" --record   the run is a recorded episode, labelled with it
-    LLM=<name> python -m brain "..."                              another backend (brain/llm.py)
+    python -m brain "put the tennis balls in the cup"                 (robotd running on the real arms)
+    python -m brain --video watch/test_video_balls.mp4                do what the person in the video does
+    python -m brain "..." --record                                    the run is a recorded episode, labelled with it
+    python -m brain "..." --steer                                     the older loop: Muse steers every move itself
+    LLM=<name> python -m brain "..."                                  another backend (brain/llm.py)
 
-Each run's transcript (without the images), tool calls, tokens, cost and time go to logs/brain/<time>.json; every
-image the model was sent, and each turn as it happens (turns.jsonl), to logs/brain/<time>/.
+Each run's transcript (without the images), steps, tokens, cost and time go to logs/brain/<time>.json; every image
+the model was sent, and each step and answer as it happens (turns.jsonl), to logs/brain/<time>/.
 """
 import argparse
 import json
@@ -14,7 +16,7 @@ import time
 
 from harness import robot
 
-from . import agent, llm
+from . import agent, llm, plan
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -31,29 +33,53 @@ def without_images(messages):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("task")
-    ap.add_argument("--max-turns", type=int, default=40)
+    ap.add_argument("task", nargs="?", default="")
+    ap.add_argument("--video", help="a video of a person doing the task")
+    ap.add_argument("--steer", action="store_true", help="the step-by-step loop instead of plan, act, check")
+    ap.add_argument("--plan-only", action="store_true", help="look and plan, move nothing")
+    ap.add_argument("--max-turns", type=int, default=40, help="--steer: the most model calls")
     ap.add_argument("--record", action="store_true", help="record the run as an episode (robotd's --dataset)")
     ap.add_argument("--llm", help="backend (default: LLM in .env, else muse)")
     a = ap.parse_args()
+    if not a.task and not a.video:
+        ap.error("give a task or --video")
+    if a.video and not os.path.exists(a.video):
+        ap.error(f"no video at {a.video}")
+    if a.steer and not a.task:
+        ap.error("--steer needs a task in words")
     model = llm.backend(a.llm)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     logs = os.path.join(HERE, "..", "logs", "brain")
-    if not robot.status().get("armed"):
+    if not robot.status().get("armed") and not a.plan_only:
         raise SystemExit("the arms are off: Vlad switches torque on (key a in robotd)")
     ep = None
-    if a.record:
-        begin = robot.episode_begin(a.task, {"kind": "agent", "model": model.model})
+    if a.record and not a.plan_only:
+        begin = robot.episode_begin(a.task or f"the video {os.path.basename(a.video)}",
+                                    {"kind": "agent", "model": model.model, "video": a.video})
         if not begin.get("ok"):
             raise SystemExit("; ".join(begin.get("errors", [])))
         ep = begin["episode"]
-    print(f"model {model.model}" + ("" if ep is None else f", recording episode {ep}") + f"\ntask: {a.task}",
-          flush=True)
-    out = agent.run(a.task, model, a.max_turns, log=lambda s: print(s, flush=True), run_dir=os.path.join(logs, stamp))
+    print(f"model {model.model}" + ("" if ep is None else f", recording episode {ep}") +
+          f"\ntask: {a.task or a.video}", flush=True)
+    log, run_dir = (lambda s: print(s, flush=True)), os.path.join(logs, stamp)
+    if a.steer:
+        out = agent.run(a.task, model, a.max_turns, log=log, run_dir=run_dir)
+    else:
+        r = plan.Run(model, log, run_dir)
+        t0 = time.time()
+        try:
+            out = r.go(a.task, a.video, plan_only=a.plan_only)
+        except robot.RobotdDown as e:
+            out = r.end(False, f"robotd stopped answering: {e}", t0)
+        except KeyboardInterrupt:
+            robot.stop("brain interrupted")
+            out = r.end(False, "interrupted", t0)
+        out = dict(out, turns=out["calls"], calls=[x for x in out.pop("record") if "step" in x],
+                   transcript=r.messages)
     os.makedirs(logs, exist_ok=True)
     path = os.path.join(logs, stamp + ".json")
-    json.dump(dict(out, task=a.task, episode=ep, transcript=without_images(out["transcript"])), open(path, "w"),
-              indent=1, default=str)
+    json.dump(dict(out, task=a.task, video=a.video, episode=ep, transcript=without_images(out["transcript"])),
+              open(path, "w"), indent=1, default=str)
     if ep is not None:  # after the log is saved: robotd may be gone by now
         try:
             end = robot.episode_end(valid=out["success"], note=None if out["success"] else out["summary"])
@@ -61,7 +87,7 @@ def main():
             print(f"episode {ep}: {end.get('frames', 0)} frames" + ("" if end.get("ok") else f", {end.get('errors')}"))
         except robot.RobotdDown as e:
             print(f"episode {ep} not ended: {e}")
-    print(f"{out['turns']} turns, {len(out['calls'])} calls, {out['tokens_in']} + {out['tokens_out']} tokens, "
+    print(f"{out['turns']} model calls, {len(out['calls'])} steps, {out['tokens_in']} + {out['tokens_out']} tokens, "
           f"${out['cost']:.3f}, {out['seconds']} s ({out['llm_seconds']} s in the model); log {os.path.relpath(path)}")
 
 

@@ -29,7 +29,7 @@ from .perception import ARM_COLOURS, SimPerception, TablePerception
 from .policy import TASK, PolicyRunner
 from .recorder import DATASETS, Recorder
 from .scene import SIDES, Scene
-from .skills import Skills
+from .skills import Skills, obj_pose
 
 PORT = int(os.environ.get("ROBOTD_PORT", 5560))
 SAG_DIR = os.path.expanduser("~/.cache/understudy")  # the arms' learned gravity sag, kept between runs
@@ -179,6 +179,16 @@ class Core:
             out[s] = dict(tip_cm=[round(float(v) * 100, 1) for v in p], pitch=round(pitch, 1), yaw=round(yaw, 1),
                           width_mm=round(float(q[5]), 1), holding=h is not None, object=h["name"] if h else None,
                           mode=snap["mode"][s], joints=[round(float(v), 1) for v in q[:5]])
+            if h is not None:  # where what it holds is now: it moves with the gripper
+                p_t, R_t = self.scene.arms[s].tool(q)
+                T = np.eye(4)
+                T[:3, :3], T[:3, 3] = R_t, p_t
+                T = T @ h["rel"]
+                ends = [T @ [0, 0, k * h["size"][2] / 2, 1] for k in (1, -1)]
+                out[s]["held"] = dict(name=h["name"], center_cm=[round(float(v) * 100, 1) for v in T[:3, 3]],
+                                      top_cm=[round(float(v) * 100, 1) for v in ends[0][:3]],
+                                      bottom_cm=[round(float(v) * 100, 1) for v in ends[1][:3]],
+                                      size_cm=[round(float(v) * 100, 1) for v in h["size"]])
             if s in snap["temps"]:
                 out[s]["temp_c"] = max(snap["temps"][s])
             if s in snap["grip_ma"]:  # the gripper motor's current now, and its peak since the last grip_force
@@ -251,6 +261,25 @@ class Core:
             if req.get("arm") not in SIDES:
                 return dict(ok=False, errors=["arm is left or right"])
             self.ctl.grip_force(req["arm"], float(req.get("pct", 30)))
+            return dict(ok=True)
+        if cmd == "hold":  # what a gripper holds, as it stood on the table (none: nothing): it moves with the gripper
+            side = req.get("arm")
+            if side not in SIDES:
+                return dict(ok=False, errors=["arm is left or right"])
+            if not req.get("name"):
+                self.holding[side] = None
+                return dict(ok=True)
+            try:
+                size = [float(v) / 100 for v in req["size_cm"]]
+                T_obj = obj_pose(np.array(req["center_cm"][:2], dtype=float) / 100, float(req["z_cm"]) / 100,
+                                 float(req.get("yaw") or 0.0))
+            except (KeyError, TypeError, ValueError) as e:
+                return dict(ok=False, errors=[f"hold needs name, size_cm, center_cm and z_cm: {e}"])
+            p_t, R_t = self.scene.arms[side].tool(self.ctl.snapshot()["q"][side])
+            T = np.eye(4)
+            T[:3, :3], T[:3, 3] = R_t, p_t
+            self.holding[side] = dict(name=str(req["name"]), size=size, rel=np.linalg.inv(T) @ T_obj,
+                                      grasp_z=float(p_t[2]), width=float(self.ctl.snapshot()["q"][side][5]))
             return dict(ok=True)
         if cmd == "stop":
             self.cancel.set()
