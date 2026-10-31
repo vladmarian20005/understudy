@@ -329,7 +329,14 @@ def keyboard(core, quit_event):
         while not quit_event.is_set():
             ch = sys.stdin.read(1)
             if ch == "a":
-                core.ctl.arm()
+                try:
+                    core.ctl.arm()
+                except Exception as e:  # a bus error part way: nothing left half on, and the keys keep working
+                    print(f"[robotd] torque on failed ({e}): switching torque off, hold the arms", flush=True)
+                    try:
+                        core.ctl.disarm()
+                    except Exception as e2:
+                        print(f"[robotd] torque off failed too ({e2}): quit with Ctrl+C", flush=True)
             elif ch == " ":
                 core.cancel.set()
                 if core.policy.active():

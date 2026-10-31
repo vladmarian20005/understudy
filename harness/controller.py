@@ -162,7 +162,10 @@ class Controller:
                 q = io.read()
                 self.q[s] = q
                 self.goal[s] = q.copy()
-                io.torque(True)
+                try:
+                    io.torque(True)
+                except ConnectionError as e:
+                    raise ConnectionError(f"{s} arm: {e}") from e
                 self.mode[s] = "hold"
         self.on_event("armed: torque on, holding position")
 

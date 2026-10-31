@@ -64,22 +64,29 @@ class BusArmIO:
 
     def torque(self, on):
         if not on:
-            self.bus.disable_torque()
+            self.bus.disable_torque(num_retry=RETRIES)
             return
         from lerobot.motors.feetech import OperatingMode
 
-        self.bus.disable_torque()
-        self.bus.configure_motors()
-        for m in self.names:
-            self.bus.write("Operating_Mode", m, OperatingMode.POSITION.value)
-            self.bus.write("P_Coefficient", m, P_GAIN)
-            self.bus.write("I_Coefficient", m, 0)
-            self.bus.write("D_Coefficient", m, D_GAIN)
-        for reg, v in GRIPPER_TORQUE.items():
-            self.bus.write(reg, "gripper", v)
-        here = self.bus.sync_read("Present_Position")
-        self.bus.sync_write("Goal_Position", here)
-        self.bus.enable_torque()
+        # a garbled status packet part way (31 Oct: 'Lock' on id 2) runs the whole sequence again, from torque off
+        for attempt in range(RETRIES + 1):
+            try:
+                self.bus.disable_torque(num_retry=RETRIES)
+                self.bus.configure_motors()
+                for m in self.names:
+                    self.bus.write("Operating_Mode", m, OperatingMode.POSITION.value, num_retry=RETRIES)
+                    self.bus.write("P_Coefficient", m, P_GAIN, num_retry=RETRIES)
+                    self.bus.write("I_Coefficient", m, 0, num_retry=RETRIES)
+                    self.bus.write("D_Coefficient", m, D_GAIN, num_retry=RETRIES)
+                for reg, v in GRIPPER_TORQUE.items():
+                    self.bus.write(reg, "gripper", v, num_retry=RETRIES)
+                here = self.bus.sync_read("Present_Position", num_retry=RETRIES)
+                self.bus.sync_write("Goal_Position", here, num_retry=RETRIES)
+                self.bus.enable_torque(num_retry=RETRIES)
+                return
+            except ConnectionError:
+                if attempt == RETRIES:
+                    raise
 
     def temperatures(self):
         self.fresh()
