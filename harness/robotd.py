@@ -370,10 +370,13 @@ def main():
     ap.add_argument("--faults", default="", metavar="KIND=P,...",
                     help=f"simulator: fault probabilities, kinds {', '.join(sim.FAULTS)} (e.g. miss=0.1,slip=0.02)")
     ap.add_argument("--trace", metavar="FILE", help="append every request and reply to FILE as JSON lines")
+    ap.add_argument("--sag-off", action="store_true", help="no gravity feed-forward and no sag learning")
     a = ap.parse_args()
     faults = {k: float(v) for k, v in (f.split("=") for f in a.faults.split(",") if f)}
     core = Core(a.sim, a.speed, a.objects, a.noise / 100, dataset=a.dataset, vision=a.vision,
                 stream_cameras=not a.no_camera_streams, sag=not a.no_sag, faults=faults)
+    if a.sag_off:
+        core.ctl.freeze_sag()
     quit_event = threading.Event()
     if sys.stdin.isatty():
         threading.Thread(target=keyboard, args=(core, quit_event), daemon=True).start()

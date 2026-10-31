@@ -81,7 +81,9 @@ class Controller:
         self.sag = {s: SagModel() for s in ios}
         self.arms_k = {}  # side -> kin.Arm, for the gravity offsets (set_arms)
         self.still = {s: 0 for s in ios}  # ticks each arm's goal hasn't changed
+        self.free = {s: False for s in ios}  # it has moved since torque on: not still lying where it was switched off
         self.jumps = {}  # side -> readings in a row that jumped impossibly far from the last good one
+        self.sag_learning = True
         self.contact = {}  # side -> where it last touched down (tip and lowest finger heights, m), until it moves
         self.touch = {s: 0 for s in ios}
         self.touch_base = {}
@@ -119,6 +121,13 @@ class Controller:
         """Leader arms (read-only ios, by side) whose movement takes their follower over."""
         self.leaders = dict(leaders)
         return self
+
+    def freeze_sag(self):
+        """No feed-forward and no learning, and nothing saved over the learned file (31 Oct: a model learned from
+        stalled arms pulled the stretched left arm about 4 cm short)."""
+        self.sag = {s: SagModel((0.0,) * 5) for s in self.ios}
+        self.sag_learning = False
+        self.sag_file = None
 
     def save_sag(self):
         if getattr(self, "sag_file", None):
@@ -162,6 +171,7 @@ class Controller:
                 q = io.read()
                 self.q[s] = q
                 self.goal[s] = q.copy()
+                self.free[s] = False
                 try:
                     io.torque(True)
                 except ConnectionError as e:
@@ -422,13 +432,16 @@ class Controller:
                 self.still[s] = 0
                 if moving:
                     self.contact.pop(s, None)
+                    self.free[s] = True
             else:
                 self.still[s] += 1
             holding = self.goal[s][5] < self.q[s][5] - SQUEEZING_MM
             if (self.mode[s] == "hold" and s in self.arms_k and s not in self.contact and not holding
                     and self.still[s] >= LEARN_AFTER and self.still[s] % LEARN_EVERY == 0):
                 arm = self.arms_k[s]
-                if arm.tool(self.q[s])[0][2] > LEARN_MIN_Z:
+                # not from an arm still lying where torque came on, folded up or on the table: 31 Oct that taught
+                # the model nonsense (the left shoulder ~0, the right one the maximum)
+                if self.sag_learning and arm.tool(self.q[s])[0][2] > LEARN_MIN_Z and self.free[s]:
                     self.sag[s].learn(arm, self.command(s), self.q[s])
         self._last_goal = {s: v.copy() for s, v in self.goal.items()}
 
