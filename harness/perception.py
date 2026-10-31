@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 
 COLOURS = [(10, "red"), (22, "orange"), (35, "yellow"), (85, "green"), (130, "blue"), (160, "purple"), (180, "red")]
+HUE_NAMES = np.array([next(name for top, name in COLOURS if h <= top) for h in range(180)])  # OpenCV hue -> name
 
 
 def colour_name(bgr):
@@ -59,15 +60,26 @@ MIN_AREA_PX = 120
 ARM_BAND = 0.05  # m: half-width of the band masked out around each arm
 OBJECT_H = 0.025  # m: assumed height, since one overhead camera can't see it
 HELD_NEAR = 0.05  # m: an object this close to a holding gripper's fingertips is in that gripper
+ARM_COLOURS = ("red", "orange")  # the real arms are printed red-orange: a blob that colour is arm the mask missed
+REACH = 0.40  # m: farther than this from both bases no arm can pick it, so it isn't an object for us
+FRONT_Y = 0.05  # m: nearer the bases' edge than this is the bases and their cables
+BRIGHT_V = 180  # a lit top washes out to near white (the tennis ball, 31 Oct): bright grey joins the blob it touches
+ROUND = 0.8  # a blob filling this much of its enclosing circle is a ball: as tall as it is wide, seen at its widest
 
 
 class TablePerception:
     """Coloured objects on the table, from the overhead camera. The arms are masked out using their joint angles, and
     each object's outline is projected onto the table through the calibrated camera model."""
 
-    def __init__(self, scene, cameras=None, ctl=None, holding=None):
+    def __init__(self, scene, cameras=None, ctl=None, holding=None, ignore_colours=()):
         self.scene, self.cameras, self.ctl = scene, cameras, ctl
         self.holding = holding if holding is not None else {}
+        self.ignore_colours = set(ignore_colours)
+
+    def on_table(self, centre):
+        """Somewhere an arm could pick it from: in front of the bases' edge and within reach of one base."""
+        return centre[1] >= FRONT_Y and min(np.linalg.norm(centre - self.scene.base_xy(s))
+                                            for s in self.scene.arms) <= REACH
 
     def arm_mask(self, shape, q):
         cam = self.scene.camera
@@ -83,13 +95,28 @@ class TablePerception:
                 cv2.line(mask, tuple(px[i].astype(int)), tuple(px[i + 1].astype(int)), 255, t)
         return mask
 
+    def footprint(self, contour, z):
+        """A contour's outline projected onto the table at height z (m): centre, length, width, long edge."""
+        table = self.scene.camera.to_table(contour.reshape(-1, 2).astype(float), z=z)[:, :2]
+        box = cv2.boxPoints(cv2.minAreaRect(table.astype(np.float32)))
+        edges = [box[(i + 1) % 4] - box[i] for i in range(2)]
+        L, W = sorted([float(np.linalg.norm(e)) for e in edges], reverse=True)
+        return box.mean(axis=0), L, W, max(edges, key=lambda e: float(np.linalg.norm(e)))
+
     def detect(self, img=None, q=None):
         if img is None:
             img = self.cameras.grab(["overhead"])["overhead"]
         if q is None:
             q = self.ctl.snapshot()["q"]
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        mask = ((hsv[:, :, 1] >= SAT_MIN) & (hsv[:, :, 2] >= VAL_MIN)).astype(np.uint8) * 255
+        coloured = ((hsv[:, :, 1] >= SAT_MIN) & (hsv[:, :, 2] >= VAL_MIN)).astype(np.uint8) * 255
+        if self.ignore_colours:  # pixel by pixel, so a bit of arm the band misses can't join an object it touches
+            coloured[np.isin(HUE_NAMES[hsv[:, :, 0]], list(self.ignore_colours))] = 0
+        bright =((hsv[:, :, 2] >= BRIGHT_V) & (hsv[:, :, 1] < SAT_MIN)).astype(np.uint8)
+        _, patches = cv2.connectedComponents(bright)
+        touching = np.unique(patches[(cv2.dilate(coloured, np.ones((5, 5), np.uint8)) > 0) & (bright > 0)])
+        mask = coloured.copy()
+        mask[np.isin(patches, touching[touching > 0])] = 255
         mask[self.arm_mask(img.shape, q) > 0] = 0
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
@@ -101,20 +128,22 @@ class TablePerception:
                 continue
             m = cv2.moments(c)
             px = [m["m10"] / m["m00"], m["m01"] / m["m00"]]
-            table = self.scene.camera.to_table(c.reshape(-1, 2).astype(float), z=OBJECT_H / 2)[:, :2]
-            box = cv2.boxPoints(cv2.minAreaRect(table.astype(np.float32)))
-            edges = [box[(i + 1) % 4] - box[i] for i in range(2)]
-            L, W = sorted([float(np.linalg.norm(e)) for e in edges], reverse=True)
-            long_edge = max(edges, key=lambda e: float(np.linalg.norm(e)))
-            centre = box.mean(axis=0)
+            h = OBJECT_H
+            centre, L, W, long_edge = self.footprint(c, h / 2)
+            _, r_px = cv2.minEnclosingCircle(c)
+            ball = bool(cv2.contourArea(c) > ROUND * np.pi * r_px ** 2)
+            if ball:
+                h = (L + W) / 2
+                centre, L, W, long_edge = self.footprint(c, h / 2)
             one = np.zeros(img.shape[:2], np.uint8)
             cv2.drawContours(one, [c], -1, 255, -1)
-            colour = colour_name([int(v) for v in cv2.mean(img, mask=one)[:3]])
+            colour = colour_name([int(v) for v in cv2.mean(img, mask=one & coloured)[:3]])
+            if colour in self.ignore_colours or not self.on_table(centre):
+                continue
             held = next((s for s, h in self.holding.items() if h and np.linalg.norm(tips[s][:2] - centre) < HELD_NEAR),
                         None)
             dets.append(dict(name=f"{colour} object", center_cm=[round(float(v) * 100, 1) for v in centre],
-                             z_cm=round(OBJECT_H * 50, 1), size_cm=[round(L * 100, 1), round(W * 100, 1),
-                                                                    round(OBJECT_H * 100, 1)],
+                             z_cm=round(h * 50, 1), size_cm=[round(L * 100, 1), round(W * 100, 1), round(h * 100, 1)],
                              yaw=round(float(np.degrees(np.arctan2(long_edge[1], long_edge[0]))) % 180, 1),
-                             color=colour, px=[int(round(px[0])), int(round(px[1]))], held_by=held))
+                             color=colour, px=[int(round(px[0])), int(round(px[1]))], held_by=held, round=ball))
         return number(dets)

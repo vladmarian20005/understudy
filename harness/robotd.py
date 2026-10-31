@@ -25,7 +25,7 @@ from . import overlay, sim
 from .cameras import CameraDown, Publisher, sizes as camera_sizes
 from .controller import Controller
 from .motion import Planner
-from .perception import SimPerception, TablePerception
+from .perception import ARM_COLOURS, SimPerception, TablePerception
 from .policy import TASK, PolicyRunner
 from .recorder import DATASETS, Recorder
 from .scene import SIDES, Scene
@@ -108,7 +108,8 @@ class Core:
             self.ctl.set_leaders(self.connect_leaders())
         self.ctl.start()
         if vision or not sim_mode:  # objects from the overhead image, as on the real arms
-            self.perception = TablePerception(self.scene, self.cameras, self.ctl, self.holding)
+            self.perception = TablePerception(self.scene, self.cameras, self.ctl, self.holding,
+                                              ignore_colours=() if sim_mode else ARM_COLOURS)
         self.planner = Planner(self.scene, self.holding)
         self.skills = Skills(self)
         self.policy = PolicyRunner(self)
