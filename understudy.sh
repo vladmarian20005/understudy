@@ -4,6 +4,7 @@
 #   ./understudy.sh [robotd args]          the cameras, then robotd on the real arms (press a for torque)
 #   ./understudy.sh cameras [--view]       the cameras only, checked, and shown with --view; Ctrl+C stops them
 #   ./understudy.sh check                  preflight: is everything ready for a session (robotd running)?
+#   ./understudy.sh view                   the three cameras, the grid, the grippers and the arms' state
 # BRAIN="<command>" and UI="<command>" start next to robotd once it answers (e.g. BRAIN="python -m brain"), with
 # their output in logs/brain.log and logs/ui.log and the settings in .env; they stop when robotd does.
 # FAKE_CAMERAS=1 serves test patterns instead of the cameras. USE_CAMERAS=overhead,left_wrist runs a subset.
@@ -51,6 +52,9 @@ case "${1:-}" in
     ;;
   check)
     exec python -m harness.preflight
+    ;;
+  view)
+    exec python -m harness.viewer
     ;;
   cameras)
     start_cameras
