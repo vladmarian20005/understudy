@@ -52,11 +52,10 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        if rig is not None:
-            rig.stop()
-    finally:
         live.close()
         httpd.server_close()
+        if rig is not None:
+            rig.stop()
 
 
 if __name__ == "__main__":
