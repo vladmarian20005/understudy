@@ -48,7 +48,7 @@ def run_episode(args, budget: Budget) -> None:
     if notes:
         print("parser notes:", *notes[:10], sep="\n  ")
     if args.send:
-        from harness import robot   # Vlad's client
+        from harness import robot
 
         check_dataset(robot, args.dataset)
         final = robot.episode_label(args.episode, "vision", vision)

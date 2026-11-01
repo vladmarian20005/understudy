@@ -17,10 +17,6 @@ class Source:
     start: float     # window of the parent video this file covers
     end: float
 
-    @property
-    def is_clip(self) -> bool:
-        return self.offset > 0.0 or math.isfinite(self.end)
-
     def local(self, video_t: float) -> float:
         """Translate a parent-video timestamp into this file's own timeline."""
         return video_t - self.offset

@@ -110,7 +110,6 @@ class Job:
 
 
 # ---- watch + segment: the SAM pipeline's video mode, as a process -----------------------------------------------------
-LINE_STAGE = [(re.compile(r"Muse '|Muse \(cached\)"), "watch"), (re.compile(r"SAM '|sam_|segmenting"), "segment")]
 
 
 def run_watch(job, log_line=None):

@@ -59,7 +59,7 @@ def pick_frames(label):
     picks = [(0, "start")]
     passes = [e for e in (label.get("robot") or {}).get("events", []) if e.get("kind") == "pass"]
     if passes and passes[0].get("t") is not None:
-        picks.append((round(passes[0]["t"] * fps), "just after the handover"))
+        picks.append((passes[0].get("frame", round(passes[0]["t"] * fps)), "just after the handover"))
     else:
         picks.append((n // 2, "middle"))
     picks.append((n - 1, "end"))

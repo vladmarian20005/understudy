@@ -4,7 +4,7 @@ Messages and tools are in the OpenAI chat format (images as image_url data URLs)
 picks the backend:
     muse      Muse Spark through Meta's Model API (OpenAI SDK). MODEL_API_KEY, MUSE_MODEL (default muse-spark-1.3),
               MODEL_API_BASE (default https://api.meta.ai/v1)
-    <name>    brain/llm_<name>.py, a local backend that stays out of git (its module has a chat function)
+    <name>    brain/llm_<name>.py, a local backend that stays out of git (its module has a Backend class)
 Tests pass a Scripted backend in directly. Every number we report comes from Muse Spark.
 """
 import importlib
@@ -102,7 +102,8 @@ class Muse:
 
 
 class Scripted:
-    """Plays back a list of replies, each text or (name, args) tool calls: for tests, no model involved."""
+    """Plays back a list of replies, each text, a dict (the JSON of ask) or (name, args) tool calls: for tests, no model
+    involved."""
 
     def __init__(self, steps):
         self.steps = list(steps)
@@ -117,6 +118,13 @@ class Scripted:
         calls = [dict(id=f"call_{len(self.seen)}_{k}", type="function",
                       function=dict(name=name, arguments=json.dumps(args))) for k, (name, args) in enumerate(step)]
         return Reply("", parse_calls(calls), dict(role="assistant", content="", tool_calls=calls), model=self.model)
+
+
+    def ask(self, system, messages, effort=None):
+        self.seen.append(list(messages))
+        step = self.steps.pop(0) if self.steps else "(script over)"
+        text = step if isinstance(step, str) else json.dumps(step)
+        return Reply(text, [], dict(role="assistant", content=text), model=self.model)
 
 
 def backend(name=None):

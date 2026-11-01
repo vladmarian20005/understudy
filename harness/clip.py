@@ -1,5 +1,5 @@
-"""Record a clip from one camera stream for the Watch pipeline: e.g. Vlad passing the brush from hand to hand under the
-overhead camera, for SAM 3.1 to turn into a score. Saves an MP4 and, next to it, a JSON with the camera model, so the
+"""Record a clip from one camera stream for the Watch pipeline: e.g. a person doing the task under the overhead
+camera, for SAM 3.1 to turn into a score. Saves an MP4 and, next to it, a JSON with the camera model, so the
 masks' pixels can be turned into table cm (or ask robotd: the to_table command).
 
     python -m harness.clip --seconds 8 --out clips/handpass.mp4 [--camera overhead]

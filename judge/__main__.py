@@ -1,6 +1,6 @@
 """Judge recorded episodes: did each one do its task? The verdict becomes the label's judge section.
 
-    python -m judge                                   every valid episode of datasets/understudy_pass without a verdict
+    python -m judge                                   every valid episode of datasets/understudy without a verdict
     python -m judge --dataset sim_pass --episodes 3 7
     python -m judge --force                           judge again, replacing the verdict
     python -m judge --dry-run                         the episodes and frames it would use, no model calls
@@ -51,7 +51,7 @@ def check_dataset(name):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--dataset", default="understudy_pass", help="its name under datasets/")
+    ap.add_argument("--dataset", default="understudy", help="its name under datasets/")
     ap.add_argument("--episodes", type=int, nargs="+", help="only these (default: all)")
     ap.add_argument("--force", action="store_true", help="judge episodes that already have a verdict again")
     ap.add_argument("--invalid-too", action="store_true", help="also judge episodes robotd marked invalid")

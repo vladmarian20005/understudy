@@ -85,11 +85,6 @@ def motor_range_deg(calibration_id):
     return np.array([[-h, h] for h in half])
 
 
-def wrap180(a):
-    """An angle in degrees wrapped to [-180, 180)."""
-    return (a + 180.0) % 360.0 - 180.0
-
-
 def wrap90(a):
     """A line direction difference in degrees wrapped to [-90, 90): lines have no sign."""
     return (a + 90.0) % 180.0 - 90.0

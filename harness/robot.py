@@ -121,7 +121,7 @@ def stop(reason="stop requested"):
 
 
 def episode_begin(task, source=None, giver=None, taker=None, target_cm=None):
-    return call("episode_begin", timeout_s=60, task=task, source=source or {"kind": "pingpong"}, giver=giver,
+    return call("episode_begin", timeout_s=60, task=task, source=source or {"kind": "unspecified"}, giver=giver,
                 taker=taker, target_cm=target_cm)
 
 
@@ -150,20 +150,6 @@ def policy_start(path, max_s=None, task=None):
 
 def policy_stop(reason="policy_stop"):
     return call("policy_stop", reason=reason)
-
-
-def run_policy(path, max_s, done=None, task=None):
-    """Run a policy until max_s, or until done(status) returns true; then stop it. Returns the run's summary."""
-    r = policy_start(path, max_s, task)
-    if not r.get("ok"):
-        return dict(ok=False, why="; ".join(r.get("errors", [])))
-    while True:
-        st = status()
-        if not st["policy"]["running"]:
-            return dict(ok=True, **(st["policy"]["last"] or {}))
-        if done is not None and done(st):
-            return policy_stop("done")
-        time.sleep(0.1)
 
 
 def hold(arm, name=None, size_cm=None, center_cm=None, z_cm=None, yaw=None):

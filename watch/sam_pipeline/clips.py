@@ -118,9 +118,3 @@ def select_clips(metadata: Path, narrations: Path, before: float, after: float,
     clips.sort(key=lambda c: (-c.score, c.video_uid, c.narration_t))
     return clips
 
-
-def find_video(video_dir: Path, uid: str, cache: dict) -> Path | None:
-    if not cache:
-        for p in video_dir.rglob("*.mp4"):
-            cache[p.stem] = p
-    return cache.get(uid)
