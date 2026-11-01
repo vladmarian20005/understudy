@@ -1,8 +1,8 @@
 """SAM 3.1 on the overhead image: the objects a task names, found by name, placed on the table in cm.
 
 robotd's colour detector only sees strongly coloured blobs, and not the arms' red and orange; SAM finds things by name
-(a tennis ball, a cylinder, a cup) whatever their colour, including ones an arm half covers. Each name is one request
-and all of them go at once: about 1.5 s for any number of names (31 Oct, inline JPEG, no upload). A mask becomes an
+whatever their colour, including ones an arm half covers. Each name is one request
+and all of them go at once: about 1.5 s for any number of names. A mask becomes an
 object shaped like robotd's detections: its outline projected onto the table through the calibrated camera, and its
 height, which one camera can't see directly: a round thing is as tall as it is wide, and an upright one is as tall as
 its top leans out from its base in the image (the camera looks down from one point, so the higher a point, the farther
@@ -11,6 +11,7 @@ from the camera's foot it lands when projected onto the table).
 import base64
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import cv2
@@ -18,7 +19,7 @@ import numpy as np
 import requests
 from meta_sam_parser import CompletedOutcome, SegmentationMaskRecord, decode_mask_to_raster, image_segmentation_format
 
-from harness.perception import TablePerception
+from harness.perception import ARM_COLOURS, HUE_NAMES, SAT_MIN, VAL_MIN, TablePerception
 
 URL = "https://api.meta.ai/v1/responses"
 MODEL = "sam-3.1"
@@ -29,7 +30,11 @@ FLAT_H = 0.025  # m: the height of anything neither round nor standing, a guess
 REACH = 0.50  # m: farther than this from both bases is off the table for us
 FRONT_Y = 0.05  # m: nearer the bases' edge than this is the bases and their cables
 ARM_SHARE = 0.9  # a mask this much inside the band round an arm is the arm (the band is 10 cm wide)
+ARM_COLOUR_SHARE = 0.5  # if this much of it is also the arms' red-orange: a raised arm's band lands off the arm, over
+# whatever stands in front of it
 SAME_IOU = 0.5  # two names' masks overlapping this much are one object: the first name wins
+RETRIES = 2  # a request that fails (the service busy) is sent again this many times
+HIDDEN_PX = 40  # an outline with this many pixels against an arm is partly behind it
 
 
 def api_key():
@@ -94,7 +99,15 @@ def segment(img, names):
 
     def one(name):
         found = []
-        for conf, (x0, y0), local in ask(url, name, key):
+        for attempt in range(RETRIES + 1):
+            try:
+                masks = ask(url, name, key)
+                break
+            except (RuntimeError, requests.RequestException):
+                if attempt == RETRIES:
+                    raise
+                time.sleep(1.0 + attempt)
+        for conf, (x0, y0), local in masks:
             full = np.zeros((h, w), np.uint8)
             lh, lw = min(local.shape[0], h - y0), min(local.shape[1], w - x0)
             full[y0:y0 + lh, x0:x0 + lw] = local[:lh, :lw]
@@ -138,11 +151,15 @@ def objects(scene, img, names, q, held_px=()):
     shape. q: both arms' joints (masks mostly on an arm are dropped). held_px: pixels of objects a gripper holds
     (those aren't on the table)."""
     arm = TablePerception(scene).arm_mask(img.shape, q) > 0
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    arm_colour = np.isin(HUE_NAMES[hsv[:, :, 0]], list(ARM_COLOURS)) & (hsv[:, :, 1] >= SAT_MIN) \
+        & (hsv[:, :, 2] >= VAL_MIN)
     kept = []
     for name, found in segment(img, names).items():
         for conf, mask in found:
             m = mask > 0
-            if not m.any() or (m & arm).sum() > ARM_SHARE * m.sum():
+            if not m.any() or ((m & arm).sum() > ARM_SHARE * m.sum()
+                               and (m & arm_colour).sum() > ARM_COLOUR_SHARE * m.sum()):
                 continue
             if any(m[min(max(int(py), 0), m.shape[0] - 1), min(max(int(px), 0), m.shape[1] - 1)]
                    for px, py in held_px):
@@ -156,13 +173,16 @@ def objects(scene, img, names, q, held_px=()):
             x, y, w, h = cv2.boundingRect(c)
             edge = x <= 1 or y <= 1 or x + w >= img.shape[1] - 1 or y + h >= img.shape[0] - 1
             centre, z, size, yaw, kind = shape(scene, c, edge)
+            # an arm in front of part of it: where it stands and how tall come out wrong
+            hidden = int((cv2.dilate(m.astype(np.uint8), np.ones((7, 7), np.uint8)) > 0)[arm].sum()) > HIDDEN_PX
             if centre[1] < FRONT_Y or min(np.linalg.norm(centre - scene.base_xy(s)) for s in scene.arms) > REACH:
                 continue
             mo = cv2.moments(c)
             kept.append(dict(found_as=name, conf=round(conf, 2), mask=m, center_cm=[round(float(v) * 100, 1)
                                                                                      for v in centre],
                              z_cm=round(z * 100, 1), size_cm=[round(float(v) * 100, 1) for v in size],
-                             yaw=round(yaw, 1), shape=kind, px=[int(mo["m10"] / mo["m00"]), int(mo["m01"] / mo["m00"])]))
+                             yaw=round(yaw, 1), shape=kind, px=[int(mo["m10"] / mo["m00"]), int(mo["m01"] / mo["m00"])],
+                             **({"hidden": True} if hidden else {})))
     for k in kept:
         del k["mask"]
     return kept
