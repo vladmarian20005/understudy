@@ -26,14 +26,14 @@ def main():
     ap.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to open it from another computer on the network")
     ap.add_argument("--no-browser", action="store_true")
     ap.add_argument("--runs", default=os.path.join(HERE, "ui_runs"), help="where runs are kept")
-    ap.add_argument("--max-turns", type=int, default=40, help="the brain's turns per run")
+    ap.add_argument("--max-steps", type=int, help="the most plan steps per run (default: brain/plan.py's)")
     ap.add_argument("--no-record", action="store_true", help="don't record runs as episodes (and so don't judge them)")
     a = ap.parse_args()
 
     from brain import llm
     llm.load_env()  # MODEL_API_KEY for the brain, the judge and (inherited) the SAM pipeline
     live = Live()
-    runner = Runner(a.runs, max_turns=a.max_turns, record=not a.no_record)
+    runner = Runner(a.runs, max_steps=a.max_steps, record=not a.no_record)
     httpd = serve(live, runner, a.host, a.port)
     url = f"http://{'127.0.0.1' if a.host in ('0.0.0.0', '') else a.host}:{a.port}"
     print(f"[ui] mission control on {url}  (Ctrl+C stops it)", flush=True)

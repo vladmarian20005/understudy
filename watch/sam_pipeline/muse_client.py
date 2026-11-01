@@ -22,13 +22,13 @@ import requests
 DEFAULT_MODEL = os.environ.get("MUSE_MODEL", "muse-spark-1.3")
 
 # Two labelled sections, so the reply parses without a JSON mode we may not have.
-PROMPT = """You are watching a short first-person (egocentric) video. The camera is on the person's head, so their own hands enter from the bottom of the frame.
+PROMPT = """You are watching a short video of a person's hands doing a task. The camera is either on their head (their hands enter from the bottom of the frame) or in front of them, facing them (their right hand is then on the left of the image): name the hands as the person's own left and right.
 
 Answer in exactly two sections, nothing else:
 
 SUMMARY: one paragraph describing, in order, every action the hands perform. Name which hand does what, in the present tense, as a run-on list. For example: "right hand picks up the ball box, left hand picks up ball 1, puts it in the ball box, picks up ball 2, puts it in the ball box, right hand sets the box down".
 
-OBJECTS: the physical objects the hands interact with, tab-separated, most important first. Use the plain everyday noun for each, singular, lowercase, no articles and no counts, because these are fed to a segmentation model as concept prompts. Do not list hands, body parts, the background, or anything untouched. For example: "ball box<TAB>tube<TAB>ball"
+OBJECTS: the physical objects the hands interact with, tab-separated, most important first. These are fed to a segmentation model as concept prompts, so use the most specific everyday name it would recognise ("tennis ball can", not "tube"; "tennis ball", not "object"), singular, lowercase, no articles and no counts. Do not list hands, body parts, the background, or anything untouched. For example: "tennis ball can<TAB>tennis ball"
 """
 
 

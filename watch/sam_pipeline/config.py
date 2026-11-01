@@ -77,6 +77,12 @@ OBJECT_FALLBACKS = {
     "paint tube": ["tube of paint", "paint container"],
     "eraser": ["rubber eraser"],
     "scissors": ["pair of scissors"],
+    # Muse calls a tennis-ball can "tube"; SAM finds nothing for "tube" there (30 Oct, test_video_balls)
+    "tube": ["tennis ball can", "can", "cylinder"],
+    "can": ["tennis ball can", "cylinder"],
+    "ball": ["tennis ball", "round ball"],
+    "cup": ["mug", "paper cup"],
+    "box": ["cardboard box", "small box"],
 }
 
 # Tried after the object-specific list is exhausted, for any object.

@@ -91,6 +91,12 @@
   };
   $("#panelToggle").addEventListener("click", () => setPanel(!document.body.classList.contains("panel-open")));
   $("#panelClose").addEventListener("click", () => setPanel(false));
+  $("#themeToggle").addEventListener("click", () => {
+    const light = document.documentElement.dataset.theme !== "light";
+    if (light) document.documentElement.dataset.theme = "light";
+    else delete document.documentElement.dataset.theme;
+    try { localStorage.setItem("theme", light ? "light" : "dark"); } catch (e) { /* private window: not kept */ }
+  });
   const lightbox = $("#lightbox");
   const zoom = (src) => { $("img", lightbox).src = src; lightbox.hidden = false; };
   lightbox.addEventListener("click", () => { lightbox.hidden = true; });
@@ -336,10 +342,14 @@
       $(".chips", c)?.remove();
       $(".title", c).textContent = "SAM 3.1 segmented the video";
       c.append(h("div", { class: "chips" }, e.objects.map((o, i) => {
-        const bar = h("i");
+        const bar = h("i", o.color ? { style: `background:${o.color}` } : {});
         setTimeout(() => { bar.style.width = `${Math.round((o.visible || 0) * 100)}%`; }, live ? 120 + i * 90 : 0);
-        return h("span", { class: "chip", style: `animation-delay:${i * 90}ms`, title: `visible in ${Math.round((o.visible || 0) * 100)}% of frames` },
-          o.name, h("span", { class: "vis" }, bar));
+        const tip = `${o.instances > 1 ? `${o.instances} of them, ` : ""}seen in ${Math.round((o.visible || 0) * 100)}% of frames` +
+          (o.muse_name ? ` (Muse called it “${o.muse_name}”)` : "");
+        return h("span", { class: "chip", style: `animation-delay:${i * 90}ms`, title: tip },
+          o.color ? h("span", { class: "dot", style: `background:${o.color}` }) : "",
+          o.instances > 1 ? h("b", {}, `${o.instances}×`) : "", o.muse_name ? `${o.muse_name}` : o.name,
+          h("span", { class: "vis" }, bar));
       })));
       if (e.pass_seen) c.append(h("div", { class: "card-body muted" }, `Hand-to-hand pass: ${e.giver} → ${e.taker}`));
       settle(c, "green");
@@ -356,6 +366,7 @@
       settle(run.card, "green");
       const c = card(ICON.route, "The task for the arms", "");
       c.append(h("div", { class: "quote" }, e.task));
+      if (e.video_summary) c.append(h("div", { class: "card-body muted" }, `From the video: ${e.video_summary}`));
       if (e.target) c.append(h("div", { class: "chips" }, h("span", { class: "chip" }, `Target (${e.target[0]}, ${e.target[1]}) cm`)));
       run.card = null;
       stepState("plan", "done", e.target ? `Target (${e.target[0]}, ${e.target[1]})` : "From your description");
@@ -408,10 +419,11 @@
       const c = card(e.success ? ICON.check : ICON.cross, e.success ? "Muse says the task is done" : "Muse couldn't finish",
         e.success ? "green" : "red");
       c.append(h("div", { class: "card-body muted" }, e.summary));
-      c.append(h("div", { class: "stats" }, h("span", {}, h("b", {}, e.turns), " turns"),
+      c.append(h("div", { class: "stats" }, e.steps != null ? h("span", {}, h("b", {}, e.steps), " steps") : "",
+        h("span", {}, h("b", {}, e.turns), e.steps != null ? " Muse calls" : " turns"),
         h("span", {}, h("b", {}, fmtTime(e.seconds)), " total"), h("span", {}, h("b", {}, fmtTime(e.llm_seconds)), " thinking"),
         h("span", {}, h("b", {}, `$${(+e.cost).toFixed(3)}`), " Muse")));
-      stepState("act", e.success ? "done" : "failed", e.success ? `${e.turns} turns` : "Not finished");
+      stepState("act", e.success ? "done" : "failed", e.success ? (e.steps != null ? `${e.steps} steps` : `${e.turns} turns`) : "Not finished");
     } else if (k === "recorded") {
       stepState("act", stepEls.act.classList.contains("failed") ? "failed" : "done", `Episode ${e.episode} · ${fmtTime(e.duration_s || 0)}`);
     } else if (k === "verdict") {

@@ -36,7 +36,9 @@ MAX_FIX_CM = 2.5  # at most this much past (more is something in the way)
 REGRIPS = 2  # then they open, go in deeper and close again, this many times at most
 # where each grip point parks: raised, level and out to the side, so the overhead camera sees the table (31 Oct: home
 # hid 430 cm2 of it, the left arm right over the balls; this hides about 50, all near the bases)
-PARK = {"left": [-26.0, 12.0, 28.0], "right": [26.0, 12.0, 28.0]}
+# 1 Nov: with the original gripper (6b0e032) (+-26, 12, 28) no longer reaches level (5 mm, 16 deg off), so every park
+# and every step with one was refused; 4 cm farther out does (checked with check_only on both sims)
+PARK = {"left": [-30.0, 12.0, 28.0], "right": [30.0, 12.0, 28.0]}
 
 
 class Failed(Exception):

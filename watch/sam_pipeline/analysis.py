@@ -147,12 +147,16 @@ def find_passes(held: list[frozenset], n_frames: int,
     return out
 
 
-def object_summary(name: str, track: list[Det], n_frames: int) -> dict:
+def object_summary(name: str, track: list[Det], n_frames: int, every: list[Det] | None = None) -> dict:
+    """track: the instance that matters (the held one), for where it starts and ends. every: all of SAM's
+    detections of this concept (four balls on the table), for how often any of them is seen and how many there are."""
+    every = track if every is None else every
+    instances = len({d.obj_id for d in every})
     if not track:
-        return {"name": name, "visible": 0.0, "start_px": None, "end_px": None}
+        return {"name": name, "visible": 0.0, "instances": instances, "start_px": None, "end_px": None}
     r = lambda p: [round(p[0]), round(p[1])]
-    return {"name": name, "visible": round(len({d.frame for d in track}) / max(n_frames, 1), 2),
-            "start_px": r(track[0].centroid), "end_px": r(track[-1].centroid)}
+    return {"name": name, "visible": round(len({d.frame for d in every}) / max(n_frames, 1), 2),
+            "instances": instances, "start_px": r(track[0].centroid), "end_px": r(track[-1].centroid)}
 
 
 def steps_from_events(events: list[dict], giver: str | None, taker: str | None) -> list[dict]:
@@ -228,6 +232,7 @@ def analyse(results, object_name: str | None, n_frames: int, fps: float, w: int,
     track = pick_object_track(obj_dets, holders)
     events, held = detect_events(track, holders, n_frames, fps, h)
     objects = [object_summary(object_name, track, n_frames)]
+    objects[0]["instances"] = len({d.obj_id for d in obj_dets})  # the held one is tracked; count the look-alikes too
     for side in ("left", "right"):
         side_track = [hs[side] for f, hs in sorted(holders.items()) if side in hs]
         objects.append(object_summary(f"{side} {holder_name}", side_track, n_frames))

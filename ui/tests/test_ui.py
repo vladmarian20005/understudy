@@ -1,6 +1,7 @@
-"""The dashboard: a run from upload to the end against the simulator (with a stand-in for the SAM pipeline and a
-scripted model), what the brain's turns become as events, the task it's given, reasoning caught from the API, and
-the HTTP side: upload, the event stream, files, the cameras."""
+"""The dashboard: a run from upload to the end against the simulator (with stand-ins for the SAM pipeline, the brain's
+SAM and Muse), what the planner's answers and steps become as events, the task it's given, stopping when the table
+lacks the video's objects, reasoning caught from the API, and the HTTP side: upload, the event stream, files, the
+cameras."""
 import json
 import os
 import socket
@@ -11,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from brain.llm import Reply, Scripted, parse_calls
+from brain.llm import Reply, Scripted
 from harness import robot
 from harness.robotd import Core, serve as serve_robotd
 from ui import jobs
@@ -19,7 +20,8 @@ from ui.server import serve
 from ui.thinking import Narrated, reasoning_of, with_reasoning
 
 SCORE = {"version": 1, "kind": "score", "task": "x", "object": {"name": "paintbrush"},
-         "source": {"kind": "video", "muse": {"summary": "left hand passes the paintbrush to the right hand"}},
+         "source": {"kind": "video", "muse": {"summary": "left hand passes the paintbrush to the right hand",
+                                         "objects": ["paintbrush"]}},
          "giver": "left", "taker": "right", "handover": {"t": 1.0, "t_end": 1.4, "both_s": 0.4},
          "target_cm": None, "quality": {"pass_seen": True},
          "vision": {"objects": [{"name": "paintbrush", "visible": 0.9}, {"name": "left hand", "visible": 1.0}]},
@@ -39,25 +41,40 @@ def job(tmp_path, task):
     return jobs.Job(str(tmp_path), "v.mp4", task)
 
 
-def test_the_description_comes_first_and_the_video_is_context(tmp_path):
-    p = jobs.plan(job(tmp_path, "Hand the brush to the right arm."), SCORE)
-    assert p["task"].startswith("Hand the brush to the right arm. (In the video the object went from the left hand")
-    assert "What the video shows: left hand passes" in p["task"]
+def test_the_description_is_the_task_with_the_video_beside_it(tmp_path):
+    folder = tmp_path / "sam"
+    folder.mkdir()
+    (folder / "clip.mp4").write_bytes(b"\0")
+    p = jobs.plan(job(tmp_path, "Hand the brush to the right arm."), SCORE, str(folder))
+    assert p["task"] == "Hand the brush to the right arm. (In the video the object went from the left hand to the right hand.)"
+    assert p["video"] == str(folder / "clip.mp4") and p["objects"] == ["paintbrush"]
     assert p["target"] == [12.0, 24.0] and p["giver"] == "left" and p["taker"] == "right"
 
 
-def test_without_a_description_a_pass_becomes_delegates_task(tmp_path):
-    p = jobs.plan(job(tmp_path, ""), SCORE)
-    assert p["task"].startswith("Pick up the brush with the left arm, hand it over in mid-air to the right arm")
-
-
-def test_without_a_pass_the_summary_is_the_task_and_with_neither_it_stops(tmp_path):
+def test_without_a_description_the_brain_does_what_the_video_shows_and_with_neither_it_stops(tmp_path):
     no_pass = dict(SCORE, quality={"pass_seen": False}, giver=None, taker=None)
     p = jobs.plan(job(tmp_path, ""), no_pass)
-    assert p["task"].startswith("Do with the arms what the person in the video did: left hand passes")
-    assert p["target"] is None and p["giver"] is None
+    assert p["task"] == "" and p["video"] is None and p["target"] is None  # brain/plan.py words it from the video
     with pytest.raises(jobs.StageError, match="no description"):
         jobs.plan(job(tmp_path, ""), dict(no_pass, source={"kind": "video"}))
+
+
+def test_the_videos_objects_are_matched_to_the_tables_loosely():
+    assert jobs.on_table(["tube", "ball"], ["tennis ball", "cylinder"]) == ["ball"]
+    assert jobs.on_table(["paintbrush"], ["brush"]) == ["paintbrush"]
+    assert jobs.on_table(["tennis ball can", "tennis ball"], ["brush", "box"]) == []
+
+
+def test_muses_answers_read_as_words():
+    plan = {"understanding": "Put each ball in the tube.", "steps": [
+        {"left": {"do": "grasp", "object": "ball 1"}, "right": {"do": "park"}, "check": "left holds ball 1"},
+        {"left": {"do": "move", "above": "tube", "by": 3}}], "done_when": "all balls in the tube"}
+    text = jobs.say(plan)
+    assert text.startswith("Put each ball in the tube.\n\n1. Left grasps the ball 1 · Right parks out of view")
+    assert "check: left holds ball 1" in text and "2. Left moves above the tube by 3 cm" in text
+    assert jobs.say({"find": ["ball", "tube"]}) == "Looking on the table for: ball, tube."
+    assert jobs.say({"ok": False, "why": "it slipped", "next": [{"left": {"do": "open"}}]}) == \
+        "Not right yet. it slipped\nFirst: Left lets go"
 
 
 # ---- reasoning, narrated replies --------------------------------------------------------------------------------------
@@ -104,71 +121,104 @@ def sim(monkeypatch):
     core.close()
 
 
-def fake_watch(job, log_line=None):
-    """Stands in for the SAM pipeline: a few of its lines, then a score and a clip."""
+def fake_watch(job, log_line=None, objects=("paintbrush",)):
+    """Stands in for the SAM pipeline: a few of its lines, then a score, Muse's reading and a clip."""
     folder = os.path.join(job.dir, "sam", "videos", "upload")
     os.makedirs(folder, exist_ok=True)
     for line in ["  Muse (cached): 1 object(s)", "  summary: left hand passes the paintbrush to the right hand",
-                 "  objects: paintbrush", "  SAM 'paintbrush' on upload (4.0s, budget used 0/3600s)"]:
+                 "  objects: " + ", ".join(objects), "  SAM 'paintbrush' on upload (4.0s, budget used 0/3600s)"]:
         log_line(line)
-    json.dump(SCORE, open(os.path.join(folder, "score.json"), "w"))
+    summary = SCORE["source"]["muse"]["summary"]
+    json.dump(dict(SCORE, source=dict(kind="video", muse=dict(summary=summary, objects=list(objects)))),
+              open(os.path.join(folder, "score.json"), "w"))
+    json.dump(dict(summary=summary, objects=list(objects)), open(os.path.join(folder, "muse.json"), "w"))
     open(os.path.join(folder, "preview.mp4"), "wb").write(b"\0" * 64)
     return folder
 
 
-def talker(x, y):
-    """A scripted model that says something before every call, like Muse is asked to."""
-    steps = [("Opening the left jaws.", [("open", dict(arm="left"))]),
-             ("Going to the brush.", [("move", dict(left=[{"xy": [x, y - 3], "z": 8, "pitch": 60}]))]),
-             ("Gripping.", [("grip", dict(arm="left"))]),
-             ("Holding it: done.", [("done", dict(success=True, summary="gripped the brush"))])]
+@pytest.fixture
+def colour_sam(monkeypatch):
+    """The brain's SAM, stood in for by robotd's colour detector: no API key needed."""
+    from brain import sam
+
+    monkeypatch.setattr(sam, "objects", lambda scene, img, names, q, held_px=(): [
+        dict(o, found_as=o["name"], shape="flat") for o in robot.detect()["objects"] if not o.get("held_by")])
+
+
+def planner(answers):
+    """A scripted Muse for brain/plan.py: its JSON answers in order, each with a bit of reasoning."""
     state = {"n": 0}
 
-    def chat(system, messages, tools):
-        text, calls = steps[min(state["n"], len(steps) - 1)]
+    def ask(system, messages, effort=None):
+        text = json.dumps(answers[min(state["n"], len(answers) - 1)])
         state["n"] += 1
-        tc = [dict(id=f"c{state['n']}_{k}", type="function", function=dict(name=n, arguments=json.dumps(a)))
-              for k, (n, a) in enumerate(calls)]
-        return Reply(text, parse_calls(tc), dict(role="assistant", content=text, tool_calls=tc), 100, 10, 0.01, "t")
+        backend.last_reasoning = f"thinking about answer {state['n']}"
+        return Reply(text, [], dict(role="assistant", content=text), 100, 10, 0.01, "t")
 
-    return SimpleNamespace(chat=chat, model="scripted-talker")
+    backend = SimpleNamespace(ask=ask, model="scripted-planner", last_reasoning=None)
+    return backend
 
 
-def test_a_run_goes_from_upload_to_the_end_as_events(sim, tmp_path):
-    x, y = robot.detect()["objects"][0]["center_cm"]
-    runner = jobs.Runner(str(tmp_path), backend_factory=lambda: talker(x, y), watch=fake_watch, record=False)
+GRIP_PLAN = [{"find": ["brush"]},
+             {"understanding": "Grip the brush with the left arm.",
+              "steps": [{"left": {"do": "grasp", "object": "brush"}, "check": "the left arm holds the brush"}],
+              "done_when": "the left arm holds the brush"},
+             {"ok": True, "why": "the brush is in the left jaws", "done": {"success": True, "summary": "gripped it"}}]
+
+
+def wait(j, s=120):
+    deadline = time.time() + s
+    while j.status == "running" and time.time() < deadline:
+        time.sleep(0.05)
+
+
+def test_a_run_goes_from_upload_to_the_end_as_events(sim, colour_sam, tmp_path):
+    runner = jobs.Runner(str(tmp_path), backend_factory=lambda: planner(GRIP_PLAN), watch=fake_watch, record=False)
     j = runner.start(b"\0" * 1000, "clip.mov", "Grip the brush with the left arm.")
     with pytest.raises(RuntimeError, match="still going"):
         runner.start(b"\0", "again.mp4", "")
-    deadline = time.time() + 60
-    while j.status == "running" and time.time() < deadline:
-        time.sleep(0.05)
+    wait(j)
     kinds = [e["kind"] for e in j.events]
     assert j.status == "done", [e for e in j.events if e["kind"] == "error"]
     assert [e["stage"] for e in j.events if e["kind"] == "stage"] == ["watch", "segment", "plan", "act"]
     assert {"summary", "objects", "segmenting", "segmented", "plan", "thought", "call", "result", "seen",
             "acted", "note", "end"} <= set(kinds)
-    thoughts = [e["text"] for e in j.events if e["kind"] == "thought"]
-    assert thoughts == ["Opening the left jaws.", "Going to the brush.", "Gripping.", "Holding it: done."]
-    calls = [e["name"] for e in j.events if e["kind"] == "call"]
-    results = [e["outcome"] for e in j.events if e["kind"] == "result"]
-    assert calls == ["open", "move", "grip"] and results == ["done", "done", "done"]
+    thoughts = [e for e in j.events if e["kind"] == "thought"]
+    assert [t["text"].split("\n")[0] for t in thoughts] == [
+        "Looking on the table for: brush.", "Grip the brush with the left arm.",
+        "Looks right. the brush is in the left jaws"]
+    assert thoughts[1]["reasoning"] == "thinking about answer 2" and thoughts[2]["calls"] == ["done"]
+    assert [e["name"] for e in j.events if e["kind"] == "call"] == ["1. Left grasps the brush"]
+    assert [e["outcome"] for e in j.events if e["kind"] == "result"] in (["done"], ["failed"])
+    acted = next(e for e in j.events if e["kind"] == "acted")
+    assert acted["success"] and acted["steps"] == 1 and acted["turns"] == 3
     seg = next(e for e in j.events if e["kind"] == "segmented")
     assert seg["pass_seen"] and seg["files"]["preview.mp4"].endswith("/files/sam/videos/upload/preview.mp4")
-    assert any(e["kind"] == "seen" and e["camera"] == "overhead" for e in j.events)
+    # what Muse looked at is shown under the answer it gave
+    assert any(e["kind"] == "seen" and e["camera"] == "overhead" and e["turn"] == 2 for e in j.events)
     # replayed from disk, the run is the same
     again = jobs.Job.load(str(tmp_path), j.id)
     assert [e["kind"] for e in again.events] == kinds and again.status == "done"
     assert runner.history()[0]["id"] == j.id
 
 
+def test_a_table_without_the_videos_objects_stops_before_planning(sim, colour_sam, tmp_path):
+    watch = lambda job, log_line=None: fake_watch(job, log_line, objects=("tube", "ball"))
+    runner = jobs.Runner(str(tmp_path), backend_factory=lambda: planner(GRIP_PLAN), watch=watch, record=False)
+    j = runner.start(b"\0", "balls.mp4", "Put each ball in the tube.")
+    wait(j)
+    assert j.status == "failed"
+    error = next(e["text"] for e in j.events if e["kind"] == "error")
+    assert "none of what the video shows (tube, ball)" in error and "SAM found brush" in error
+    assert "--hd --objects balls" in error
+    assert not [e for e in j.events if e["kind"] == "call"]  # no step ran
+
+
 def test_without_robotd_the_run_stops_at_act_with_a_reason(tmp_path, monkeypatch):
     monkeypatch.setattr(robot, "PORT", free_port())  # nothing there
-    runner = jobs.Runner(str(tmp_path), backend_factory=lambda: talker(0, 0), watch=fake_watch, record=False)
+    runner = jobs.Runner(str(tmp_path), backend_factory=lambda: planner(GRIP_PLAN), watch=fake_watch, record=False)
     j = runner.start(b"\0", "v.mp4", "do it")
-    deadline = time.time() + 60
-    while j.status == "running" and time.time() < deadline:
-        time.sleep(0.05)
+    wait(j, 60)
     assert j.status == "failed"
     assert "robotd isn't running" in next(e["text"] for e in j.events if e["kind"] == "error")
 
@@ -192,9 +242,8 @@ class FakeLive:
         return {"robotd": False}
 
 
-def test_the_server_takes_an_upload_streams_its_events_and_serves_its_files(sim, tmp_path):
-    x, y = robot.detect()["objects"][0]["center_cm"]
-    runner = jobs.Runner(str(tmp_path), backend_factory=lambda: talker(x, y), watch=fake_watch, record=False)
+def test_the_server_takes_an_upload_streams_its_events_and_serves_its_files(sim, colour_sam, tmp_path):
+    runner = jobs.Runner(str(tmp_path), backend_factory=lambda: planner(GRIP_PLAN), watch=fake_watch, record=False)
     port = free_port()
     httpd = serve(FakeLive(), runner, "127.0.0.1", port)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()

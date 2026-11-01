@@ -14,6 +14,8 @@ from harness.scene import Scene
 
 FPS = 12
 STATUS_S, DETECT_S = 0.2, 0.5
+GRACE_S = 4.0  # a camera that misses frames for less than this keeps its last one (the HD sim renders slower while
+# the arms move), rather than flickering to "offline"
 
 
 def placeholder(text, size=(640, 480)):
@@ -37,6 +39,7 @@ class Live:
         self.status = None  # robotd's status reply, or None when it isn't answering
         self.objects = []
         self.frames = {n: jpeg(placeholder("starting")) for n in ORDER}
+        self.good = {}  # name -> (time, the last real frame)
         self.seq = 0
         self.cond = threading.Condition()
         self.running = True
@@ -62,19 +65,22 @@ class Live:
                 self.objects = []
 
     def _frame(self, name):
-        if name == "overhead":
-            try:
+        try:
+            if name == "overhead":
                 img = self.cams.grab(["overhead"])["overhead"]
                 arms = (self.status or {}).get("arms") or {}
-                return jpeg(overlay.draw(img, self.scene, self.objects, arms))
-            except CameraDown:
-                return jpeg(placeholder("overhead camera offline"))
-        try:
-            b64, _ = self.cams.latest[name]
-            self.cams.grab([name])  # raises when the frame is stale
-            return base64.b64decode(b64)  # already a JPEG: pass it through
+                frame = jpeg(overlay.draw(img, self.scene, self.objects, arms))
+            else:
+                b64, _ = self.cams.latest[name]
+                self.cams.grab([name])  # raises when the frame is stale
+                frame = base64.b64decode(b64)  # already a JPEG: pass it through
         except (CameraDown, KeyError, TypeError):
+            t, last = self.good.get(name, (0.0, None))
+            if last is not None and time.monotonic() - t < GRACE_S:
+                return last
             return jpeg(placeholder(f"{name.replace('_', ' ')} camera offline"))
+        self.good[name] = (time.monotonic(), frame)
+        return frame
 
     def _loop(self):
         last = {"status": 0.0, "detect": 0.0}

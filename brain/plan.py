@@ -122,7 +122,9 @@ def watch(path):
     """What the person in a video does: (summary, objects), from watch's cached Muse reading, or read now."""
     stem = os.path.splitext(os.path.basename(path))[0]
     here = os.path.join(os.path.dirname(__file__), "..")
-    for cache in (os.path.join(here, "watch", "sam_out", "videos", stem, "muse.json"),
+    # watch's video mode keeps its clip.mp4 next to the muse.json it read it with (the dashboard runs on that clip)
+    for cache in (os.path.join(os.path.dirname(os.path.abspath(path)), "muse.json"),
+                  os.path.join(here, "watch", "sam_out", "videos", stem, "muse.json"),
                   os.path.join(here, "sam_out", "videos", stem, "muse.json")):
         if os.path.exists(cache):
             d = json.load(open(cache))
@@ -255,6 +257,7 @@ class Run:
             step = steps[i]
             self.stats["steps"] += 1
             n = self.stats["steps"]
+            self.starting(n, step)
             ts = time.time()
             results, stopped = act.run(step)
             self.log(f"[{n}] {describe(step)} -> {json.dumps(results)} ({time.time() - ts:.1f} s)")
@@ -283,6 +286,9 @@ class Run:
             steps = steps[:i + 1] + nxt + ([] if v.get("replace_rest") else steps[i + 1:])
             i += 1
         return self.end(False, f"stopped after {self.stats['steps']} steps and {self.calls} calls", t0)
+
+    def starting(self, n, step):
+        """Called just before step n runs: nothing here; a dashboard shows it running."""
 
     def end(self, success, summary, t0):
         self.log(f"{'success' if success else 'failure'}: {summary}")

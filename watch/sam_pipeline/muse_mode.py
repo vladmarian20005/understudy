@@ -20,7 +20,7 @@ from sam_pipeline.credentials import api_key
 from sam_pipeline.ego4d import handover_summary
 from sam_pipeline.muse_client import PROMPT, MuseClient, MuseReading, parse_reading
 from sam_pipeline.pipeline import segment_video
-from sam_pipeline.preview import render_preview
+from sam_pipeline.preview import preview_colors, render_preview
 from sam_pipeline.sam_client import SamClient
 from sam_pipeline.video import cut_clip, probe
 
@@ -115,8 +115,15 @@ def run_video(args, budget: Budget) -> None:
             continue
         dets = results[role][0]
         track = pick_object_track(dets, a.holders)
-        extra.append(object_summary(results[role][2] or name, track, n))
+        extra.append(object_summary(results[role][2] or name, track, n, every=dets))
     objects = [a.objects[0]] + extra + a.objects[1:]
+    colors = preview_colors(list(roles))
+    for o, role in zip(objects, list(roles)):   # the colour each object has in preview.mp4
+        o["color"] = colors[role]
+        if o["name"] != roles[role]:              # SAM found it under a fallback concept: say what Muse called it
+            o["muse_name"] = roles[role]
+    for o, side in zip(objects[len(roles):], ("left", "right")):
+        o["color"] = colors[side]
 
     primary = roles.get("object", "")
     task = (f"Pass the {a.object_prompt or primary} to the other arm" if passes
