@@ -251,6 +251,9 @@ def build(scene, objects="balls"):
     s.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
     s.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
     s.option.impratio = 10
+    # 1 Nov: without it a gripped ball crept down through the jaws (soft contacts give under a steady squeeze) and
+    # fell out 2-5 s after every grasp; with it, held still for 10 s it moves 0 mm
+    s.option.noslip_iterations = 5
     v = s.visual
     v.global_.offwidth, v.global_.offheight = 1920, 1440
     v.quality.shadowsize, v.quality.offsamples = 4096, 8
