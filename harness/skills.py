@@ -309,12 +309,13 @@ class Skills:
     def solve(self, arm, p, yaw=None, pitch=None, turn=None):
         """Joints for the fingertips at p (m), steepest pitch unless given. The same jaw line half a turn of the wrist
         round flips a held object end for end: turn="keep" keeps the wrist's turn, "flip" turns it round, None keeps
-        it where the joint allows."""
+        it where the joint allows. No yaw: the wrist's roll joint stays as it is."""
         arm_k = self.scene.arms[arm]
         q_now = self.q()[arm][:5]
-        yaw = arm_k.pose(q_now)[2] if yaw is None else yaw
+        roll = q_now[4] if yaw is None else None
         try:
-            q = arm_k.ik(p, pitch, yaw, seed=q_now) if pitch is not None else arm_k.steepest(p, yaw, seed=q_now)[0]
+            q = arm_k.ik(p, pitch, yaw, seed=q_now, roll=roll) if pitch is not None else \
+                arm_k.steepest(p, yaw, seed=q_now, roll=roll)[0]
         except kin.Unreachable as e:
             raise Fail("unreachable", str(e))
         want_flip = turn == "flip"
@@ -334,14 +335,15 @@ class Skills:
             return self.check_holding(arm, "slip")
         return {}
 
-    def move(self, left=None, right=None, speed="normal", check_only=False):
+    def move(self, left=None, right=None, speed="normal", check_only=False, avoid=None):
         """Free-form motion. For each arm a keyframe or a list of them; the k-th keyframes of both arms make one phase,
         and both finish each phase together. A keyframe (table cm, degrees, mm): xy [x, y], z, rel [dx, dy, dz] (from
         where the previous keyframe left it), yaw (the jaw line, mod 180), pitch (90 straight down, 0 level; left
         out: as steep as reaches there), width (the opening). What's left out stays as it was. roll (degrees) turns
         only the wrist from where it is, which tilts what the gripper holds about the fingers' direction; it goes in
         an arm's first keyframe, with nothing but width. Picking up and letting go are grasp and release (they feel
-        for the table); check_only plans and checks without moving."""
+        for the table); check_only plans and checks without moving. avoid: standing things the arms keep clear of,
+        [{"name", "xy" [x, y] cm, "r" cm, "h" cm}] (robotd doesn't see the table's objects as obstacles otherwise)."""
         frames = {}
         for side, kf in (("left", left), ("right", right)):
             if kf is not None:
@@ -381,7 +383,13 @@ class Skills:
                 tips[s] = self.tool_T(s, q0[s])[:3, 3]
             n = max(len(f) for f in frames.values())
             return [Phase(f"move {k + 1}", {s: goal(s, f[k], line, k) for s, f in frames.items() if k < len(f)},
-                          speed=speed) for k in range(n)]
+                          speed=speed, avoid=obstacles) for k in range(n)]
+
+        try:
+            obstacles = tuple((str(o["name"]), float(o["xy"][0]) / 100, float(o["xy"][1]) / 100, float(o["r"]) / 100,
+                               float(o["h"]) / 100) for o in (avoid or ()))
+        except (KeyError, TypeError, ValueError, IndexError):
+            raise Fail("check", 'avoid is a list of {"name", "xy": [x, y], "r", "h"} (cm)')
 
         try:
             try:
@@ -435,12 +443,12 @@ class Skills:
             self.play(Phase("pull out", {arm: Goal(p=p, pitch="steep", line=False)}, speed="slow"))
 
     def home(self, arms=("left", "right"), width=None):
-        """Park the arms; width (mm) also sets the grippers' opening."""
+        """Park the arms in the ready pose (raised, level, pointing ahead, camera on top: Scene.ready); width (mm) also
+        sets the grippers' opening."""
         arms = [arms] if isinstance(arms, str) else list(arms)
         goals = {}
         for s in arms:  # the same home pose every time, wrist included: every episode starts alike
-            q, _ = self.scene.arms[s].steepest(self.scene.home_tip(s), lowest=0)
-            goals[s] = Goal(joints=self.scene.arms[s].canonical_roll(q), line=False, width=width)
+            goals[s] = Goal(joints=self.scene.ready(s), line=False, width=width)
         self.play(Phase("home", goals))
         self.wait(HOME_SETTLE_S)  # holding still is when the controller learns the arms' sag
         return {}

@@ -178,9 +178,8 @@ class SimWorld:
         for name, size, color, x, y, yaw in SCENES[objects] if isinstance(objects, str) else objects:
             self.add(name, size, color, x, y, yaw)
         self.io = {}
-        for s in scene.arms:
-            q, _ = scene.arms[s].steepest(scene.home_tip(s), lowest=0)
-            self.io[s] = SimArmIO(self, s, np.append(q, 40.0))
+        for s in scene.arms:  # the ready pose, as the real arms start every run
+            self.io[s] = SimArmIO(self, s, np.append(scene.ready(s), 40.0))
 
     def add(self, name, size, color, x, y, yaw=0.0):
         self.objects.append(SimObject(name, tuple(size), tuple(color), np.array([x, y, size[2] / 2]), yaw))

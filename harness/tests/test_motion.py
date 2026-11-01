@@ -78,3 +78,29 @@ def test_joint_move(scene, home):
     q = home["left"][:5] + [10, 0, 0, 0, 20]
     [traj] = Planner(scene).plan(home, [Phase("j", {"left": Goal(joints=q, line=False)})])
     assert np.allclose(traj.rows["left"][-1, :5], q)
+
+
+def test_a_goal_without_yaw_keeps_the_wrist_roll(scene):
+    start = {s: np.append(scene.ready(s), 40.0) for s in ("left", "right")}
+    for goal in (Goal(p=[-0.12, 0.30, 0.15], pitch=0), Goal(p=[-0.12, 0.25, 0.06], pitch=60, line=False)):
+        [traj] = Planner(scene).plan(start, [Phase("go", {"left": goal})])
+        assert np.allclose(traj.rows["left"][:, 4], start["left"][4], atol=0.01)
+
+
+def test_a_move_that_sweeps_through_a_standing_thing_it_avoids_is_refused(scene):
+    start = {s: np.append(scene.ready(s), 40.0) for s in ("left", "right")}
+    goal = Goal(p=[-0.08, 0.24, 0.05], pitch=50, line=False)  # the right arm reaches across to the left side
+    Planner(scene).plan(start, [Phase("go", {"right": goal})])  # nothing to avoid: fine
+    tube = ("tube", 0.03, 0.20, 0.039, 0.26)  # standing in the way
+    with pytest.raises(PlanError, match="would hit the tube"):
+        Planner(scene).plan(start, [Phase("go", {"right": goal}, avoid=(tube,))])
+    far = ("tube", 0.25, 0.42, 0.039, 0.26)
+    Planner(scene).plan(start, [Phase("go", {"right": goal}, avoid=(far,))])
+
+
+def test_an_arm_beside_a_standing_thing_may_move_away_from_it(scene):
+    start = {s: np.append(scene.ready(s), 40.0) for s in ("left", "right")}
+    p0 = scene.arms["right"].tool(start["right"])[0]
+    beside = ("tube", p0[0] - 0.05, p0[1], 0.039, 0.30)  # right next to the gripper, as just let go
+    Planner(scene).plan(start, [Phase("up", {"right": Goal(p=p0 + [0.03, -0.03, 0.0], pitch=0)},
+                                      avoid=(beside,))])

@@ -63,7 +63,7 @@ HELD_NEAR = 0.05  # m: an object this close to a holding gripper's fingertips is
 ARM_COLOURS = ("red", "orange")  # the real arms are printed red-orange: a blob that colour is arm the mask missed
 REACH = 0.40  # m: farther than this from both bases no arm can pick it, so it isn't an object for us
 FRONT_Y = 0.05  # m: nearer the bases' edge than this is the bases and their cables
-BRIGHT_V = 180  # a lit top washes out to near white (the tennis ball, 31 Oct): bright grey joins the blob it touches
+BRIGHT_V = 180  # a lit top washes out to near white: bright grey joins the blob it touches
 ROUND = 0.8  # a blob filling this much of its enclosing circle is a ball: as tall as it is wide, seen at its widest
 
 

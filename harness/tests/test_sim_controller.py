@@ -33,7 +33,7 @@ def test_pick_carry_drop(scene):
     world, ctl, planner = rig(scene)
     block = world.objects[0]
     x, y, _ = block.pos
-    run(ctl, planner, [Phase("above", {"left": Goal(p=[x, y, 0.08], pitch="steep", yaw=90, width=70)}),
+    run(ctl, planner, [Phase("above", {"left": Goal(p=[x, y, 0.08], pitch="steep", yaw=90, width=70, line=False)}),
                        Phase("down", {"left": Goal(p=[x, y, 0.015], pitch="steep", yaw=90)}),
                        Phase("close", {"left": Goal(width=0)}),
                        Phase("lift", {"left": Goal(p=[x, y, 0.10], pitch="steep")})])
@@ -50,7 +50,8 @@ def test_pick_carry_drop(scene):
 def test_closing_on_air_misses(scene):
     world, ctl, planner = rig(scene)
     x, y, _ = world.objects[0].pos
-    run(ctl, planner, [Phase("beside", {"left": Goal(p=[x, y - 0.08, 0.02], pitch="steep", yaw=90, width=70)}),
+    run(ctl, planner, [Phase("beside", {"left": Goal(p=[x, y - 0.08, 0.02], pitch="steep", yaw=90, width=70,
+                                                         line=False)}),
                        Phase("close", {"left": Goal(width=0)})])
     assert not world.objects[0].held and ctl.snapshot()["q"]["left"][5] < 1
     ctl.close()
@@ -145,6 +146,16 @@ def test_real_arm_goes_live_where_it_is():
     assert ("torque", False) in names[:i_goal]
     io.write([10, 20, 30, 40, 50, 84])
     assert bus.calls[-1][2]["gripper"] == pytest.approx(100)
+
+
+def test_real_gripper_opening_follows_the_swinging_jaw():
+    """With the jaw's travel known (101 deg on the left arm), a 67 mm opening sits at 53 % of the servo's range, not 68 %:
+    the opening grows fast near closed and slowly near open."""
+    io = BusArmIO("port", "x", 98.0, bus=FakeBus(), opening=Scene().opening)
+    io.travel = 101.4
+    assert io.mm(0) == pytest.approx(0) and io.mm(100) == pytest.approx(97.9, abs=0.3)
+    assert io.pct(67) == pytest.approx(52.6, abs=0.5)
+    assert io.mm(io.pct(40)) == pytest.approx(40, abs=0.1)
 
 
 def test_closing_jaws_square_up_a_skewed_brush(scene):

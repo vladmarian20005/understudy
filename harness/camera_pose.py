@@ -1,6 +1,6 @@
 """Re-solve the overhead camera's pose after it has been moved, with the arms as the target. Each arm in turn closes
 its gripper and holds its fingertips 2 cm over a few spots on the table; you click the fingertips in the window, and
-solvePnP fits the camera's pose to the clicks. The lens (K, dist) stays as calibrated on 24 Oct. Writes
+solvePnP fits the camera's pose to the clicks. The lens (K, dist) stays as calibrated. Writes
 harness/scene.json (the old one is kept as scene.json.bak); restart robotd and the viewer to use it.
 
     python -m harness.camera_pose            (robotd running and armed, the table clear; keep a hand near space)

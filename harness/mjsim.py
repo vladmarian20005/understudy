@@ -38,6 +38,7 @@ CAM_MOUNT = "wrist_cam_mount_32x32_uvc_so101"  # replaces wrist_roll_follower_so
 JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
 
 TIMESTEP = 0.002  # s
+NOSLIP = 5  # the no-slip solver's passes: without it, what the jaws squeeze creeps out of them
 JOINT_SPEED = 180.0  # deg/s, as sim.py
 GRIP_SPEED = 120.0  # mm/s
 GRIP_MAX_NM = 2.94  # the STS3215's stall torque at 12 V
@@ -48,13 +49,6 @@ ARM_TYPE, WORLD_TYPE = 2, 1  # contype bits: arms touch the table and objects, n
 
 PLA = (0.86, 0.30, 0.20, 1.0)  # the arms are printed red-orange
 SERVO = (0.07, 0.07, 0.08, 1.0)
-# The wrist camera's lens in gripper_link: 8 mm in front of the 32x32 board's centre on the mount's plate, looking
-# 25 deg in toward the fingertips (from the mount's CAD). Image up is away from the fingers: the jaws come in at the
-# bottom.
-WRIST_LENS = (0.0025, -0.0676, -0.0041)
-WRIST_VIEW = (0.0, 0.4226, -0.9063)
-WRIST_HFOV = 100.0  # deg
-
 BALL = (60, 225, 210)  # BGR
 # name, kind, size (m: box L x W x H, ball diameter, tube outer diameter x height), colour (BGR), x, y (m), yaw (deg)
 SCENES = {
@@ -64,6 +58,9 @@ SCENES = {
     "brush": [("brush", "box", (0.20, 0.03, 0.025), (40, 140, 230), -0.08, 0.24, 10.0)],
     "blocks": [("red block", "box", (0.04, 0.04, 0.04), (50, 50, 210), -0.12, 0.22, 0.0),
                ("blue block", "box", (0.04, 0.04, 0.04), (210, 120, 40), 0.10, 0.26, 30.0)],
+    "cubes": [("left cube", "box", (0.03, 0.03, 0.03), (235, 206, 135), -0.22, 0.20, 10.0),
+              ("back cube", "box", (0.03, 0.03, 0.03), (235, 206, 135), -0.15, 0.25, -8.0),
+              ("right cube", "box", (0.03, 0.03, 0.03), (235, 206, 135), -0.065, 0.20, -40.0)],
 }
 MASS = {"ball": 0.057, "tube": 0.09, "box": 0.08}  # kg
 TUBE_WALL = 0.0015  # m
@@ -118,7 +115,7 @@ def tube_mesh(r_out, r_in, z0, z1, floor=None, n=64):
 
 
 # ---- the model -------------------------------------------------------------------------------------------------------
-def arm_spec():
+def arm_spec(wrist):
     """One follower: the SO-ARM100 model with the wrist-camera mount as the fixed jaw, red-orange PLA, and collision
     pieces for the jaws. A whole jaw's convex hull would fill the gap between the fingers, so each jaw collides as
     convex slices of its mesh; the rest of the arm collides as its parts' hulls."""
@@ -162,11 +159,11 @@ def arm_spec():
     a.joint("gripper").range[0] = lo
     a.actuator("gripper").ctrlrange[0] = lo
     # the lens: z_cam is minus the view; y_cam (image up) is the camera's offset from the fingers, -y of gripper_link
-    z = -np.array(WRIST_VIEW)
+    z = -np.array(wrist["view"])
     y = np.array([0.0, -1.0, 0.0]) - z * (z @ [0.0, -1.0, 0.0])
     y /= np.linalg.norm(y)
-    vfov = 2 * math.degrees(math.atan(math.tan(math.radians(WRIST_HFOV) / 2) * 3 / 4))
-    gripper.add_camera(name="wrist", pos=WRIST_LENS, quat=quat(np.column_stack([np.cross(y, z), y, z])), fovy=vfov)
+    vfov = 2 * math.degrees(math.atan(math.tan(math.radians(wrist["hfov_deg"]) / 2) * 3 / 4))
+    gripper.add_camera(name="wrist", pos=wrist["lens"], quat=quat(np.column_stack([np.cross(y, z), y, z])), fovy=vfov)
     return a
 
 
@@ -225,6 +222,7 @@ def build(scene, objects="balls"):
     s.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
     s.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
     s.option.impratio = 10
+    s.option.noslip_iterations = NOSLIP
     v = s.visual
     v.global_.offwidth, v.global_.offheight = 1920, 1440
     v.quality.shadowsize, v.quality.offsamples = 4096, 8
@@ -252,7 +250,7 @@ def build(scene, objects="balls"):
                 type=mujoco.mjtLightType.mjLIGHT_DIRECTIONAL, diffuse=[0.22] * 3, specular=[0.0] * 3, castshadow=False)
     for side in SIDES:
         B = scene.arms[side].base
-        w.add_frame(pos=B[:3, 3], quat=quat(B[:3, :3])).attach_body(arm_spec().body("base"), side + "/", "")
+        w.add_frame(pos=B[:3, 3], quat=quat(B[:3, :3])).attach_body(arm_spec(scene.wrist_cad).body("base"), side + "/", "")
     objs = []
     for i, (name, kind, size, color, x, y, yaw) in enumerate(SCENES[objects] if isinstance(objects, str) else objects):
         body, extent = add_object(s, i, name, kind, size, color, x, y, yaw)
@@ -335,9 +333,26 @@ class MjObject:
         return self.size[2] / 2
 
 
+def jittered(objects, cm, seed):
+    """The scene's objects each moved up to cm in x and y (and turned), none closer than 1 cm to another: so a run is
+    tested on a layout it wasn't tuned on."""
+    rng = np.random.default_rng(seed)
+    objs = list(SCENES[objects] if isinstance(objects, str) else objects)
+    reach = [max(np.atleast_1d(o[2])[:2]) / 2 for o in objs]  # a rough radius per object
+    for _ in range(200):
+        out = [(n, k, s, c, x + rng.uniform(-cm, cm) / 100, y + rng.uniform(-cm, cm) / 100,
+                yaw + rng.uniform(-30, 30)) for n, k, s, c, x, y, yaw in objs]
+        if all(math.hypot(a[4] - b[4], a[5] - b[5]) > reach[i] + reach[j] + 0.01
+               for i, a in enumerate(out) for j, b in enumerate(out) if i < j):
+            return out
+    raise ValueError(f"no layout with the objects {cm} cm from where they stand that keeps them apart")
+
+
 class MjWorld:
-    def __init__(self, scene, objects="balls", noise=0.0, seed=0, sag=True, faults=None):
+    def __init__(self, scene, objects="balls", noise=0.0, seed=0, sag=True, faults=None, jitter=0.0):
         self.scene = scene
+        if jitter:
+            objects = jittered(objects, jitter, seed)
         self.model, objs = build(scene, objects)
         m = self.model
         self.data = mujoco.MjData(m)
@@ -373,9 +388,8 @@ class MjWorld:
         self.geom_obj = {g: o.index for o in self.objects for g in o.geoms}
         self.grip_deg, self.grip_mm = self._grip_table()
         self.io = {}
-        for s in SIDES:
-            q, _ = scene.arms[s].steepest(scene.home_tip(s), lowest=0)
-            self.io[s] = MjArmIO(self, s, np.append(q, 40.0))
+        for s in SIDES:  # the arms start in the ready pose: level, pointing ahead, the wrist camera on top
+            self.io[s] = MjArmIO(self, s, np.append(scene.ready(s), 40.0))
         with self.lock:
             for s, io in self.io.items():
                 self._drive(s, io, 0.0)
@@ -551,8 +565,8 @@ class MjWorld:
     # ---- cameras -----------------------------------------------------------------------------------------------------
     def render(self, name, width, height, snap=None, camera=None):
         """A camera's image (BGR) at a snapshot: overhead, left_wrist or right_wrist, or a free mujoco.MjvCamera.
-        Every render runs on the one render thread: OpenGL contexts used from two threads deadlock (31 Oct, robotd
-        hung in CGLLockContext when a request for images met the camera streams)."""
+        Every render runs on the one render thread: OpenGL contexts used from two threads deadlock (robotd hangs in
+        CGLLockContext when a request for images meets the camera streams)."""
         snap = snap or self.snapshot()
         return self.render_pool.submit(self._render, name, width, height, snap, camera).result()
 

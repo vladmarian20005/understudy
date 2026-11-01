@@ -1,5 +1,5 @@
 """Gravity sag. The SO-101's servos hold a position with a steady error under load, so an extended arm sits below where
-it was told to go (1-1.5 cm at the fingertips on the real arms, 24 Oct). The error on each joint grows with the gravity
+it was told to go (1-1.5 cm at the fingertips on the real arms). The error on each joint grows with the gravity
 torque on it, which the joint's own encoder sees: goal minus present position.
 
 torque(arm, q) is that torque, from point masses along the arm: how the arm's potential energy changes per degree of
@@ -18,10 +18,11 @@ import numpy as np
 MASSES = np.array([0.05, 0.12, 0.12, 0.08, 0.25])
 STEP_DEG = 0.5
 GRAVITY_JOINTS = (1, 2, 3)  # shoulder lift, elbow, wrist flex; the pan and the wrist roll turn about near-vertical axes
-LEARN_RATE = 0.25
-MIN_TORQUE = 0.0001  # learn a joint's compliance only where gravity pulls on it this much
-MAX_COMPLIANCE = 3000.0  # deg per unit torque: about 5 deg at the meeting point
-MAX_OFFSET_DEG = 4.0
+LEARN_RATE = 0.1
+MIN_TORQUE = 0.0003  # learn a joint's compliance only where gravity pulls on it this much: in a raised pose a few
+# counts of stiction swamp the sag
+MAX_COMPLIANCE = 8000.0  # deg per unit torque: the softest joint measured needs about 5500
+MAX_OFFSET_DEG = 8.0
 PRIOR = (0.0, 1000.0, 1100.0, 700.0, 0.0)
 
 
@@ -58,10 +59,11 @@ class SagModel:
         """One settled reading: the arm was commanded `commanded` and sits at `present`."""
         tau = torque(arm, present)
         err = np.asarray(commanded, dtype=float)[:5] - np.asarray(present, dtype=float)[:5]
+        # signed: the servos stick either way of where they sag to, and clipping the readings at 0 drags the average down
         for i in GRAVITY_JOINTS:
             if abs(tau[i]) >= MIN_TORQUE:
-                seen = float(np.clip(err[i] / tau[i], 0.0, MAX_COMPLIANCE))
-                self.c[i] += LEARN_RATE * (seen - self.c[i])
+                seen = float(np.clip(err[i] / tau[i], -MAX_COMPLIANCE, MAX_COMPLIANCE))
+                self.c[i] = float(np.clip(self.c[i] + LEARN_RATE * (seen - self.c[i]), 0.0, MAX_COMPLIANCE))
         self.samples += 1
 
 

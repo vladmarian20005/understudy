@@ -8,7 +8,9 @@ and the jaws close along its x axis turned by jaw_deg about z.
 - pitch: how far the approach points below the arm base's horizontal, in degrees (90 = straight down). It's measured
   in the base frame because a 5-joint arm on a slightly tilted base (2-6 degrees, measured) can't point exactly at the
   world's vertical, only at its own
-- yaw: the direction of the jaw line on the table, in degrees, mod 180 (0 = along the table's x)
+- yaw: the direction of the jaw line on the table, in degrees, mod 180 (0 = along the table's x). With the gripper
+  level it can't tell the wrist's roll (every roll casts the same jaw line on the table), so a pose that should keep
+  the gripper as it is holds the roll joint instead (ik's roll).
 Lengths are metres in this module.
 """
 import json
@@ -27,6 +29,7 @@ LIMIT_MARGIN_DEG = 3.0
 ANGLE_WEIGHT = 0.05  # m per rad: 1 degree of pitch or yaw error weighs like 0.9 mm in the IK
 POS_TOL = 0.0015  # m
 ANGLE_TOL = math.radians(1.5)
+CAMERA = np.array([0.0, -1.0, 0.0])  # the wrist camera's side of gripper_link (the 32x32 mount's arm)
 
 
 class Unreachable(Exception):
@@ -101,6 +104,7 @@ class Arm:
         self.signs = np.asarray(signs, dtype=float)
         self.tcp = np.asarray(tcp, dtype=float)
         self.jaw = np.array([math.cos(math.radians(jaw_deg)), math.sin(math.radians(jaw_deg)), 0.0])
+        self._upright = None
         self.origins, urdf_limits = chain()
         lim = np.sort(np.stack([self.to_deg(urdf_limits[:, 0]), self.to_deg(urdf_limits[:, 1])], axis=1), axis=1)
         if motor_range is not None:
@@ -134,6 +138,20 @@ class Arm:
                 alt[4] += turn
                 return alt
         return q
+
+    def upright_roll(self):
+        """The wrist roll (degrees) that puts the wrist camera on top of the gripper: level, the jaws then close
+        sideways, square to where the fingers point; tipped down, the camera stays on the gripper's top side (pointing
+        straight down, the side away from the base). Every other joint turns the gripper about axes the roll keeps
+        square to the jaws, so this one roll does it in any pose."""
+        if self._upright is None:
+            q = self.ik((self.base @ [0.30, 0.0, 0.20, 1.0])[:3], 0, roll=0.0)  # level, 30 cm out, 20 cm up
+            up = []
+            for r in np.arange(self.limits[4, 0], self.limits[4, 1], 0.5):
+                q[4] = r
+                up.append((float((self.tool(q)[1] @ CAMERA)[2]), r))
+            self._upright = float(max(up)[1])
+        return self._upright
 
     def within_limits(self, q_deg, slack=0.0):
         q = np.asarray(q_deg, dtype=float)[:5]
@@ -211,18 +229,27 @@ class Arm:
             ae = max(ae, abs(math.radians(wrap90(cur_yaw - math.degrees(yaw)))))
         return pe, ae
 
-    def _solve(self, q0_deg, p, pitch, yaw, iters, perp=None):
+    def _solve(self, q0_deg, p, pitch, yaw, iters, perp=None, roll=None):
+        """roll (degrees): the wrist roll stays there and the other four joints solve; yaw and perp are then ignored."""
         lo, hi = self.to_urdf(self.limits[:, 0]), self.to_urdf(self.limits[:, 1])
         lo, hi = np.minimum(lo, hi), np.maximum(lo, hi)
+        q0_deg = np.asarray(q0_deg, dtype=float).copy()
+        if roll is not None:
+            q0_deg[4] = roll
+            yaw = perp = None
         qu = np.clip(self.to_urdf(q0_deg), lo, hi)
+        n_free = 5
+        if roll is not None:
+            qu[4] = self.to_urdf(q0_deg)[4]  # held as it is, even past a limit (an arm may start there)
+            n_free = 4
         eps, lam = 1e-5, 0.004
         for _ in range(iters):
             r = self._residual(qu, p, pitch, yaw, perp)
             pe, ae = self._errors(qu, p, pitch, yaw, perp)
             if pe < POS_TOL and ae < ANGLE_TOL:
                 return qu, pe, ae
-            J = np.empty((len(r), 5))
-            for i in range(5):
+            J = np.empty((len(r), n_free))
+            for i in range(n_free):
                 d = np.zeros(5)
                 d[i] = eps
                 J[:, i] = (self._residual(qu + d, p, pitch, yaw, perp) - r) / eps
@@ -230,26 +257,29 @@ class Arm:
             n = np.linalg.norm(dq)
             if n > 0.3:
                 dq *= 0.3 / n
-            qu = np.clip(qu + dq, lo, hi)
+            qu[:n_free] = np.clip(qu[:n_free] + dq, lo[:n_free], hi[:n_free])
         pe, ae = self._errors(qu, p, pitch, yaw, perp)
         return qu, pe, ae
 
-    def steepest(self, p, yaw=None, seed=None, lowest=30, step=5):
+    def steepest(self, p, yaw=None, seed=None, lowest=30, step=5, roll=None):
         """The steepest pitch (90 down to `lowest`) that reaches p: (joint degrees, pitch). Straight down only reaches
         low points 15-25 cm in front of the base; higher or farther needs a tilted approach."""
         err = None
         for pitch in range(90, lowest - 1, -step):
             try:
-                return self.ik(p, pitch, yaw, seed, restarts=1 if pitch > lowest else 4), float(pitch)
+                return self.ik(p, pitch, yaw, seed, restarts=1 if pitch > lowest else 4, roll=roll), float(pitch)
             except Unreachable as e:
                 err = e
         raise err
 
-    def ik(self, p, pitch=None, yaw=None, seed=None, iters=80, restarts=4, perp=None):
+    def ik(self, p, pitch=None, yaw=None, seed=None, iters=80, restarts=4, perp=None, roll=None):
         """Joint degrees (5) that put the fingertips at p (world, m) with the given pitch and yaw (degrees, either can
         be None = free). perp, a direction, replaces yaw: the jaw line is set square to it (to close across a tilted
-        object). Tries the seed first, then a few standard postures, then random ones. Raises Unreachable."""
+        object). roll (degrees) replaces both: the wrist roll joint stays at it. Tries the seed first, then a few
+        standard postures, then random ones. Raises Unreachable."""
         p = np.asarray(p, dtype=float)
+        if roll is not None:
+            yaw = perp = None
         pr = None if pitch is None else math.radians(pitch)
         yr = None if yaw is None else math.radians(yaw)
         # the pan that faces the target, as a fallback seed
@@ -257,13 +287,13 @@ class Arm:
         pan = self.to_deg([math.atan2(local[1], local[0]), 0, 0, 0, 0])[0]
         seeds = [] if seed is None else [np.asarray(seed, dtype=float)[:5]]
         seeds += [np.array([pan, 0, 0, 60, 0]), np.array([pan, -30, 30, 80, 0]), np.array([pan, 20, -40, 60, 90]),
-                  np.array([pan, 0, 0, 60, -90])]
+                  np.array([pan, 0, 0, 60, -90]), np.array([pan, -80, 20, 70, 90])]  # the last: raised, level
         rng = np.random.default_rng(int(abs(p[0] * 1e4) + abs(p[1] * 1e6)) % 2 ** 31)
         seeds += [rng.uniform(self.limits[:, 0], self.limits[:, 1]) for _ in range(restarts)]
         best = None
         for s in seeds:
             qu, pe, ae = self._solve(s, p, pr, yr, iters if best is None else iters // 2,
-                                     None if perp is None else np.asarray(perp, dtype=float))
+                                     None if perp is None else np.asarray(perp, dtype=float), roll)
             if best is None or pe + ANGLE_WEIGHT * ae < best[1] + ANGLE_WEIGHT * best[2]:
                 best = (qu, pe, ae)
             if pe < POS_TOL and ae < ANGLE_TOL:
