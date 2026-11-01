@@ -41,7 +41,7 @@ class PlanError(Exception):
 class Goal:
     p: object = None  # fingertip, world m (3,)
     pitch: object = None  # deg; None keeps the current pitch; "steep" = the steepest that reaches the goal
-    yaw: float = None  # deg mod 180; None keeps the current yaw
+    yaw: float = None  # deg mod 180; None keeps the wrist's roll joint (so the camera stays where it is)
     width: float = None  # gripper opening, mm; None keeps it
     joints: object = None  # 5 joint degrees, instead of p/pitch/yaw
     line: bool = True  # straight fingertip line; False interpolates the joints
@@ -126,12 +126,14 @@ class Planner:
             p1, pitch1, yaw1 = arm.pose(q_end)
         else:
             p1 = p0 if goal.p is None else np.asarray(goal.p, dtype=float)
-            yaw1 = yaw0 if goal.yaw is None else float(goal.yaw) % 180
+            yaw1 = None if goal.yaw is None else float(goal.yaw) % 180
+            roll = q0[4] if goal.yaw is None else None
             if goal.pitch == "steep":
-                q_end, pitch1 = arm.steepest(p1, yaw1, seed=q0[:5])
+                q_end, pitch1 = arm.steepest(p1, yaw1, seed=q0[:5], roll=roll)
             else:
                 pitch1 = pitch0 if goal.pitch is None else float(goal.pitch)
-                q_end = arm.ik(p1, pitch1, yaw1, seed=q0[:5])
+                q_end = arm.ik(p1, pitch1, yaw1, seed=q0[:5], roll=roll)
+            yaw1 = arm.pose(q_end)[2] if yaw1 is None else yaw1
         width1 = q0[5] if goal.width is None else float(np.clip(goal.width, 0, self.scene.stroke_mm))
         return (p0, pitch0, yaw0), (p1, pitch1, yaw1), width1, q_end
 
@@ -152,7 +154,9 @@ class Planner:
             s = smooth((k + 1) / n)
             if goal.line and goal.joints is None:
                 p = p0 + (p1 - p0) * s
-                q_new = arm.ik(p, pitch0 + (pitch1 - pitch0) * s, (yaw0 + dyaw * s) % 180, seed=q, iters=40)
+                keep = goal.yaw is None  # the roll joint stays, rather than the yaw
+                q_new = arm.ik(p, pitch0 + (pitch1 - pitch0) * s, None if keep else (yaw0 + dyaw * s) % 180,
+                               seed=q, iters=40, roll=q0[4] if keep else None)
                 if np.max(np.abs(q_new - q)) > MAX_JOINT_STEP:
                     raise kin.Unreachable(f"{side} would swing to another posture near "
                                           f"({p[0] * 100:.1f}, {p[1] * 100:.1f}, {p[2] * 100:.1f}) cm")

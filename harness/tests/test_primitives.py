@@ -56,10 +56,10 @@ def tip(core, side):
 
 def test_move_plays_keyframes_for_both_arms_in_step(core):
     left0, right0 = tip(core, "left"), tip(core, "right")
-    r = run(core, "move", left={"rel": [0, 0, 5]}, right={"rel": [0, 0, 5]}, check_only=True)
+    r = run(core, "move", left={"rel": [0, 0, -5]}, right={"rel": [0, 0, -5]}, check_only=True)
     assert r["outcome"] == "done" and r["checked"]["phases"] == 1
     assert np.allclose(tip(core, "left"), left0, atol=0.2)  # checked, not moved
-    assert abs(r["checked"]["ends"]["left"][2] - (left0[2] + 5)) < 0.5
+    assert abs(r["checked"]["ends"]["left"][2] - (left0[2] - 5)) < 0.5
     r = run(core, "move", left=[{"xy": [-10, 25], "z": 12}, {"rel": [0, 5, 0], "yaw": 0}],
             right={"xy": [10, 25], "z": 8, "width": 20})
     assert r["outcome"] == "done" and r["phases"] == 2, r["why"]
@@ -131,6 +131,7 @@ def test_refusals(core):
     assert r["outcome"] == "refused" and "bad arguments" in r["why"]
     r = run(core, "fly", arm="left")
     assert r["outcome"] == "refused"
+    run(core, "move", right={"xy": [12, 25], "z": 10})  # from the raised ready pose there's no room to back off
     r = run(core, "release", arm="right", set_down=True)
     assert r["outcome"] == "done"  # nothing held: it just opens
 

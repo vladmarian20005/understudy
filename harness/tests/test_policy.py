@@ -92,9 +92,10 @@ def test_an_unsafe_pose_stops_the_policy(core, monkeypatch):
     arm = core.scene.arms["left"]
     q = core.ctl.snapshot()["q"]["left"]
     dive_q = None
-    for d in range(5, 90, 5):  # shoulder lift forward until the fingertips are well under the table
-        cand = q.copy()
+    for d, e in [(d, e) for e in range(0, 90, 10) for d in range(5, 90, 5)]:  # shoulder forward, elbow open, until
+        cand = q.copy()  # the fingertips are well under the table (from the raised ready pose it takes both)
         cand[1] += d
+        cand[2] += e
         if arm.within_limits(cand) and arm.tool(cand)[0][2] < -0.02:
             dive_q = cand
             break

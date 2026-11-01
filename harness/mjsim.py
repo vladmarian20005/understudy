@@ -373,9 +373,8 @@ class MjWorld:
         self.geom_obj = {g: o.index for o in self.objects for g in o.geoms}
         self.grip_deg, self.grip_mm = self._grip_table()
         self.io = {}
-        for s in SIDES:
-            q, _ = scene.arms[s].steepest(scene.home_tip(s), lowest=0)
-            self.io[s] = MjArmIO(self, s, np.append(q, 40.0))
+        for s in SIDES:  # the arms start in the ready pose: level, pointing ahead, the wrist camera on top
+            self.io[s] = MjArmIO(self, s, np.append(scene.ready(s), 40.0))
         with self.lock:
             for s, io in self.io.items():
                 self._drive(s, io, 0.0)

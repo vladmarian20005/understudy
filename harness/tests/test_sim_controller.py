@@ -33,7 +33,7 @@ def test_pick_carry_drop(scene):
     world, ctl, planner = rig(scene)
     block = world.objects[0]
     x, y, _ = block.pos
-    run(ctl, planner, [Phase("above", {"left": Goal(p=[x, y, 0.08], pitch="steep", yaw=90, width=70)}),
+    run(ctl, planner, [Phase("above", {"left": Goal(p=[x, y, 0.08], pitch="steep", yaw=90, width=70, line=False)}),
                        Phase("down", {"left": Goal(p=[x, y, 0.015], pitch="steep", yaw=90)}),
                        Phase("close", {"left": Goal(width=0)}),
                        Phase("lift", {"left": Goal(p=[x, y, 0.10], pitch="steep")})])
@@ -50,7 +50,8 @@ def test_pick_carry_drop(scene):
 def test_closing_on_air_misses(scene):
     world, ctl, planner = rig(scene)
     x, y, _ = world.objects[0].pos
-    run(ctl, planner, [Phase("beside", {"left": Goal(p=[x, y - 0.08, 0.02], pitch="steep", yaw=90, width=70)}),
+    run(ctl, planner, [Phase("beside", {"left": Goal(p=[x, y - 0.08, 0.02], pitch="steep", yaw=90, width=70,
+                                                         line=False)}),
                        Phase("close", {"left": Goal(width=0)})])
     assert not world.objects[0].held and ctl.snapshot()["q"]["left"][5] < 1
     ctl.close()

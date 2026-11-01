@@ -14,6 +14,8 @@ from . import kin
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCENE = os.path.join(HERE, "scene.json")
 SIDES = ("left", "right")
+READY_Y, READY_Z = 0.26, 0.28  # m: the ready pose's fingertips, in front of the base and above the table: closer in or
+# higher, the arm has no room to move 5 cm down or back
 
 
 class Camera:
@@ -62,6 +64,7 @@ class Scene:
         self.camera = Camera(**d["camera"])
         self.table_x = tuple(d["table"]["x"])
         self.table_y = tuple(d["table"]["y"])
+        self._ready = {}
 
     def base_xy(self, side):
         return self.arms[side].base[:2, 3].copy()
@@ -75,6 +78,22 @@ class Scene:
         """Where the fingertips park: 25 cm in front of the base, 10 cm up (at the steepest pitch that reaches)."""
         p = self.base_xy(side) + 0.25 * self.forward(side)
         return np.array([p[0], p[1], 0.10])
+
+    def ready(self, side):
+        """The joints of the pose both arms start from and park in: raised, the gripper level and pointing straight
+        ahead (+y), the wrist camera on top. READY_Y in front of the base, READY_Z up; the fingertips sit off the
+        wrist's axis, so their x is whatever makes the gripper point straight ahead. Mostly out of the overhead camera's
+        way: it hides about 20 cm2 of the table 15-45 cm out, at its sides."""
+        if side not in self._ready:
+            arm = self.arms[side]
+            b = self.base_xy(side)
+            x, q = b[0], None
+            for _ in range(5):
+                q = arm.ik([x, b[1] + READY_Y, READY_Z], 0, seed=q, roll=arm.upright_roll())
+                a = -arm.tool(q)[1][:, 2]
+                x -= np.arctan2(a[0], a[1]) * READY_Y  # turning about the base by the heading's error
+            self._ready[side] = q
+        return self._ready[side].copy()
 
     def middle(self):
         """The point on the table halfway between the bases, 25 cm forward: where handovers meet (closer in, the taker

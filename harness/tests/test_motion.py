@@ -78,3 +78,10 @@ def test_joint_move(scene, home):
     q = home["left"][:5] + [10, 0, 0, 0, 20]
     [traj] = Planner(scene).plan(home, [Phase("j", {"left": Goal(joints=q, line=False)})])
     assert np.allclose(traj.rows["left"][-1, :5], q)
+
+
+def test_a_goal_without_yaw_keeps_the_wrist_roll(scene):
+    start = {s: np.append(scene.ready(s), 40.0) for s in ("left", "right")}
+    for goal in (Goal(p=[-0.12, 0.30, 0.15], pitch=0), Goal(p=[-0.12, 0.25, 0.06], pitch=60, line=False)):
+        [traj] = Planner(scene).plan(start, [Phase("go", {"left": goal})])
+        assert np.allclose(traj.rows["left"][:, 4], start["left"][4], atol=0.01)

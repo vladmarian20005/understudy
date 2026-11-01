@@ -1,5 +1,6 @@
 """The agent loop against the simulator, with a scripted model: tool calls reach robotd, results and images come
 back, and the run ends on done, on a model that stops calling tools, or on too many turns."""
+import itertools
 import json
 import threading
 
@@ -12,12 +13,16 @@ from harness import robot
 from harness.robotd import Core, serve
 
 
+PORTS = itertools.count(5898)  # one per test: the last test's server can still hold its port while the next binds
+
+
 @pytest.fixture
 def sim(tmp_path, monkeypatch):
     core = Core(sim_mode=True, speed=0, quiet=True, dataset="agent", datasets=str(tmp_path))
     stop = threading.Event()
-    threading.Thread(target=serve, args=(core, 5898, stop), daemon=True).start()
-    monkeypatch.setattr(robot, "PORT", 5898)
+    port = next(PORTS)
+    threading.Thread(target=serve, args=(core, port, stop), daemon=True).start()
+    monkeypatch.setattr(robot, "PORT", port)
     yield core
     stop.set()
     core.close()
@@ -65,7 +70,7 @@ def test_a_nudge_goes_where_it_says_and_keeps_the_tilt_and_jaws(sim):
     a1 = seen["arms"]["left"]
     moved = np.array(a1["tip_cm"]) - np.array(a0["tip_cm"])
     assert np.linalg.norm(moved - (2 * f - r - 2 * u)) < 0.4
-    assert abs(a1["pitch"] - a0["pitch"]) < 3 and abs(a1["yaw"] - a0["yaw"]) < 3
+    assert abs(a1["pitch"] - a0["pitch"]) < 3 and abs(a1["joints"][4] - a0["joints"][4]) < 1  # the wrist's roll kept
     assert set(seen["images"]) == {"overhead", "left_wrist"}
 
 

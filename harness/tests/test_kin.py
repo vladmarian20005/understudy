@@ -129,3 +129,35 @@ def test_an_off_axis_tool_point_keeps_its_roll():
     arm.tcp = np.array([0.027, 0.0, -0.104])
     q = np.array([10.0, -20.0, 15.0, 70.0, -60.0])
     assert np.array_equal(arm.canonical_roll(q), q)
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_the_ready_pose_is_level_points_ahead_with_the_camera_on_top(scene, side):
+    arm = scene.arms[side]
+    q = scene.ready(side)
+    p, R = arm.tool(q)
+    assert arm.within_limits(q)
+    assert abs(arm.angles(R)[0]) < 2  # level
+    a = -R[:, 2]
+    assert math.degrees(abs(math.atan2(a[0], a[1]))) < 6  # pointing ahead, +y
+    assert (R @ kin.CAMERA)[2] > 0.95  # the camera on top
+    assert p[2] == pytest.approx(0.28, abs=0.002)
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_holding_the_roll_keeps_the_camera_on_top_level_or_steep(scene, side):
+    """At a level pitch the yaw can't see the roll; holding the roll joint keeps the camera on the gripper's top side:
+    up when level, away from the base pointing down."""
+    arm = scene.arms[side]
+    up = arm.upright_roll()
+    x = -0.10 if side == "left" else 0.10
+    for p, pitch in (([x, 0.28, 0.20], 0), ([x, 0.25, 0.08], 45), ([x, 0.22, 0.03], 90)):
+        q = arm.ik(np.array(p), pitch, roll=up)
+        _, R = arm.tool(q)
+        assert q[4] == pytest.approx(up)
+        cam, approach = R @ kin.CAMERA, -R[:, 2]
+        upward = np.array([0, 0, 1.0]) - approach * approach[2]  # up, square to where the fingers point
+        if np.linalg.norm(upward) < 0.2:  # straight down: away from the base
+            upward = np.append(np.asarray(p[:2]) - arm.base[:2, 3], 0.0)
+        assert cam @ upward / np.linalg.norm(upward) > 0.9, (pitch, cam)
+        assert abs((R @ arm.jaw)[2]) < 0.1  # the jaws close level

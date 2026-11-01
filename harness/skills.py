@@ -309,12 +309,13 @@ class Skills:
     def solve(self, arm, p, yaw=None, pitch=None, turn=None):
         """Joints for the fingertips at p (m), steepest pitch unless given. The same jaw line half a turn of the wrist
         round flips a held object end for end: turn="keep" keeps the wrist's turn, "flip" turns it round, None keeps
-        it where the joint allows."""
+        it where the joint allows. No yaw: the wrist's roll joint stays as it is."""
         arm_k = self.scene.arms[arm]
         q_now = self.q()[arm][:5]
-        yaw = arm_k.pose(q_now)[2] if yaw is None else yaw
+        roll = q_now[4] if yaw is None else None
         try:
-            q = arm_k.ik(p, pitch, yaw, seed=q_now) if pitch is not None else arm_k.steepest(p, yaw, seed=q_now)[0]
+            q = arm_k.ik(p, pitch, yaw, seed=q_now, roll=roll) if pitch is not None else \
+                arm_k.steepest(p, yaw, seed=q_now, roll=roll)[0]
         except kin.Unreachable as e:
             raise Fail("unreachable", str(e))
         want_flip = turn == "flip"
@@ -435,12 +436,12 @@ class Skills:
             self.play(Phase("pull out", {arm: Goal(p=p, pitch="steep", line=False)}, speed="slow"))
 
     def home(self, arms=("left", "right"), width=None):
-        """Park the arms; width (mm) also sets the grippers' opening."""
+        """Park the arms in the ready pose (raised, level, pointing ahead, camera on top: Scene.ready); width (mm) also
+        sets the grippers' opening."""
         arms = [arms] if isinstance(arms, str) else list(arms)
         goals = {}
         for s in arms:  # the same home pose every time, wrist included: every episode starts alike
-            q, _ = self.scene.arms[s].steepest(self.scene.home_tip(s), lowest=0)
-            goals[s] = Goal(joints=self.scene.arms[s].canonical_roll(q), line=False, width=width)
+            goals[s] = Goal(joints=self.scene.ready(s), line=False, width=width)
         self.play(Phase("home", goals))
         self.wait(HOME_SETTLE_S)  # holding still is when the controller learns the arms' sag
         return {}
