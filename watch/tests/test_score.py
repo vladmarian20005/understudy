@@ -1,4 +1,4 @@
-"""The score format: SCORE.md's example is a score delegate accepts, and the pipeline's handover block."""
+"""The score format: SCORE.md's example, and the pipeline's handover block."""
 import json
 import os
 import re
@@ -9,13 +9,11 @@ sys.path.insert(0, WATCH)  # sam_pipeline lives in watch/
 
 from sam_pipeline.detections import Det  # noqa: E402
 from sam_pipeline.ego4d import handover_summary  # noqa: E402
-from watch import delegate  # noqa: E402
 
 
-def test_the_example_in_score_md_is_a_score_delegate_accepts():
+def test_the_example_in_score_md_is_a_score():
     text = open(os.path.join(WATCH, "SCORE.md")).read()
     example = json.loads(re.search(r"```json\n(.*?)```", text, re.S).group(1).replace('"RRRRBBBBLLLL..."', '""'))
-    delegate.check(example)
     assert example["version"] == 1 and example["frame"] in ("ego", "overhead")
     first_cells = [line.split("|")[1] for line in text.splitlines() if line.startswith("| `")]
     documented = {name for cell in first_cells for name in re.findall(r"`([a-z_]+)", cell)}

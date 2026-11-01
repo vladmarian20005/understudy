@@ -2,7 +2,7 @@
 
 A **score** is what a human video says should happen; a **label** is what a robot episode actually did
 (see the contracts doc). The watch pipeline (`python -m watch.sam_ego4d ego4d ...`) writes one score per clip, as
-`sam_out/scores/<clip_id>/score.json`. `python -m watch.delegate <score.json>` turns a score into the brain's task.
+`sam_out/scores/<clip_id>/score.json`.
 
 ## Where a score comes from
 
@@ -77,8 +77,6 @@ the left arm is on the left of the image.
 
 ## Rules
 
-- A score can be delegated to the brain when `quality.pass_seen` is true and `giver` and `taker` are set.
-  `watch.delegate` refuses the others unless told otherwise.
 - `giver`/`taker` in a score map one to one onto the arms. The robot's object is whatever is on the table
   (the simulator's `brush`), not necessarily what the person held.
 - `null` means "not seen in this clip", never zero.

@@ -1,13 +1,5 @@
-"""The tools a model drives the arms with: robotd's checked motions as OpenAI function schemas, and the code that runs
-them.
-
-No task skills: the model picks things up the way a person with a joystick and a camera on the gripper would, by
-sight. move brings a gripper near something (table cm, read off the overhead grid), nudge steps it in the gripper's
-own directions while the model watches the wrist camera, and grip and open work the jaws. Every call comes back as
-text: the outcome, why it failed, where an arm was sent and where it got to, each arm's pose, and each object with
-its offset from each gripper's grip point (where the jaws pinch) in that gripper's nudge directions. With it come a
-fresh overhead image and the wrist camera of each arm that moved, with the line through the fingertips and the arm's
-pose drawn on.
+"""What the brain sees and remembers: a fresh look at the table, the objects by name across looks, each arm's grip point,
+and the state as text for the model.
 
 Objects come from the overhead camera, which can't see under an arm: an object an arm covers keeps the position it
 was last seen whole at, until the camera sees it whole again or it hasn't been seen for FORGET_LOOKS looks.
@@ -15,7 +7,6 @@ was last seen whole at, until the camera sees it whole again or it hasn't been s
 import base64
 import json
 import re
-import time
 
 import cv2
 import numpy as np
@@ -27,25 +18,9 @@ from . import sam, wrist
 from .reach import GRIP_BACK_CM, TALL_CM, reach_facts
 from .rig import WRISTS, scene
 
-ARM = {"type": "string", "enum": ["left", "right"]}
-XY = {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "table cm [x, y]"}
-KEYFRAME = {
-    "type": "object",
-    "properties": {
-        "xy": XY,
-        "z": {"type": "number", "description": "fingertip height above the table, cm"},
-        "rel": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3,
-                "description": "[dx, dy, dz] table cm from where the previous keyframe left the fingertips"},
-        "yaw": {"type": "number", "description": "jaw line angle on the table, degrees (0 = along x); left out: kept"},
-        "pitch": {"type": "number", "description": "90 straight down, 0 level; left out: the steepest that reaches"},
-        "width": {"type": "number", "description": "gripper opening, mm (0-98)"},
-    },
-}
 # +1 if a nudge along the jaw line's direction moves the gripper toward the right of its wrist image. Both -1: image
 # right is +x when an arm reaches +y.
 RIGHT_SIGN = {"left": -1, "right": -1}
-SHORT_CM = 1.0  # an arm that ends farther than this from where it was sent is reported short
-PITCH_GIVE = (0, -5, 5, -10, 10, -15, 15)  # deg: a nudge keeps the tilt if it can, else takes the nearest that reaches
 # grip closes with the gripper's torque capped at GRIP_PCT, so the jaws stop on whatever pushes back harder and can't
 # squeeze harder than that.
 GRIP_PCT = 30.0
@@ -74,40 +49,6 @@ _grip = {}
 
 def grip_offset(side):
     return _grip.get(side, (GRIP_BACK_CM, 0.0))
-
-
-def fn(name, description, props=None, required=()):
-    return {"type": "function", "function": {"name": name, "description": description, "parameters": {
-        "type": "object", "properties": props or {}, "required": list(required)}}}
-
-
-TOOLS = [
-    fn("look", "Fresh images and positions without moving. overhead (default) is the table with the grid; wrists "
-       "adds both wrist cameras.", {"cams": {"type": "string", "enum": ["overhead", "wrists"]}}),
-    fn("move", "Coarse motion to table coordinates, checked before anything moves. left and right are lists of "
-       "keyframes; the k-th keyframes of both arms are one phase and both arms finish each phase together. Values "
-       "left out stay as they are, except pitch: give it, or the arm takes the steepest pitch that reaches, which "
-       "can tilt the gripper a lot. check_only plans it without moving.",
-       {"left": {"type": "array", "items": KEYFRAME}, "right": {"type": "array", "items": KEYFRAME},
-        "speed": {"type": "string", "enum": ["slow", "normal", "fast"]}, "check_only": {"type": "boolean"}}),
-    fn("nudge", "Step one gripper a little in its own directions, keeping its tilt and jaw angle: forward is the way "
-       "the fingers point (flat, along the table), right is toward the right of its wrist image, up is straight "
-       "up. cm, negative for back, left, down. The same directions as each object's offset from the grip point, "
-       "so nudging by an object's offset brings the grip point onto it.",
-       {"arm": ARM, "forward": {"type": "number"}, "right": {"type": "number"}, "up": {"type": "number"}},
-       ["arm"]),
-    fn("grip", "Close the jaws with a limited force until they stop on what's between them, and hold it. Says the "
-       "opening they stopped at (and the object's width, when one is at the grip point); on nothing they open again.",
-       {"arm": ARM}, ["arm"]),
-    fn("open", "Open the jaws (to let go, or before reaching for something).",
-       {"arm": ARM, "width": {"type": "number", "description": "opening, mm (default fully open, 98)"}}, ["arm"]),
-    fn("home", "Park one or both arms out of the way (the start pose).",
-       {"arms": {"type": "string", "enum": ["both", "left", "right"]},
-        "width": {"type": "number", "description": "gripper opening, mm"}}),
-    fn("done", "Finish: the task is done, or can't be done. Say honestly which, and why.",
-       {"success": {"type": "boolean"}, "summary": {"type": "string"}}, ["success", "summary"]),
-]
-NAMES = {t["function"]["name"] for t in TOOLS}
 
 
 def reset():
@@ -267,6 +208,15 @@ def state_text(seen):
     return json.dumps(dict(arms=arms, objects=objs))
 
 
+def at_grip(side, arm):
+    """The remembered object nearest the arm's grip point, if one is within GRIP_NEAR_CM of it."""
+    _, g, _ = frame(side, arm["joints"])
+    near = [(np.linalg.norm(np.array(o["center_cm"] + [o.get("z_cm", o["size_cm"][2] / 2)]) - g * 100), o)
+            for o in _memory["objects"]]
+    d, o = min(near, key=lambda t: t[0], default=(None, None))
+    return o if d is not None and d < GRIP_NEAR_CM else None
+
+
 def label(o):
     """An object's name, and for a standing one how tall it is: perspective makes a tall thing look like it lies."""
     if str(o.get("shape", "")).startswith("upright"):
@@ -314,130 +264,3 @@ def look(cams=("overhead",)):
             seen["images"][cam] = wrist.wrist_image(b64, sides[cam], seen.get("arms", {}).get(sides[cam]),
                                                     grip_offset(sides[cam]))
     return seen
-
-
-def targets(tips, frames):
-    """Where each arm's fingertips are sent (cm), by robotd's move rules: xy, then z, then rel, keyframe by keyframe."""
-    out = {}
-    for s, kfs in frames.items():
-        p = np.array(tips[s], dtype=float)
-        for kf in kfs:
-            if "xy" in kf:
-                p[:2] = kf["xy"]
-            if "z" in kf:
-                p[2] = kf["z"]
-            if "rel" in kf:
-                p += np.array(kf["rel"], dtype=float)
-        out[s] = p
-    return out
-
-
-def at_grip(side, arm):
-    """The remembered object nearest the arm's grip point, if one is within GRIP_NEAR_CM of it."""
-    _, g, _ = frame(side, arm["joints"])
-    near = [(np.linalg.norm(np.array(o["center_cm"] + [o.get("z_cm", o["size_cm"][2] / 2)]) - g * 100), o)
-            for o in _memory["objects"]]
-    d, o = min(near, key=lambda t: t[0], default=(None, None))
-    return o if d is not None and d < GRIP_NEAR_CM else None
-
-
-def grip(side, arm):
-    """Close with the torque capped at GRIP_PCT until the jaws stop on what's between them, and hold it there; open
-    again on nothing. Says the opening they stopped at, the object's width when one is at the grip point, and the peak
-    current (how hard they squeezed)."""
-    def now():
-        return robot.status()["arms"][side]
-
-    w0 = now()["width_mm"]
-    robot.grip_force(side, GRIP_PCT)
-    r = robot.move(**{side: [{"width": 0}]}, speed="slow")
-    if r.get("outcome") != "done":
-        return dict(r, width_mm=now()["width_mm"])
-    time.sleep(GRIP_SETTLE_S)
-    a = now()
-    w, out = a["width_mm"], dict(r, width_mm=round(a["width_mm"], 1))
-    if "grip_peak_ma" in a:
-        out["squeeze_ma"] = a["grip_peak_ma"]
-    o = at_grip(side, arm)
-    if o:
-        out["object_width_mm"] = round(min(o["size_cm"][:2]) * 10)
-    if w < HOLD_MIN_MM:
-        robot.move(**{side: [{"width": w0}]}, speed="slow")
-        return dict(out, why=f"closed on nothing (at {w:.1f} mm): opened again")
-    robot.move(**{side: [{"width": max(0.0, w - GRIP_HOLD_MM)}]}, speed="slow")
-    return out
-
-
-def motion(name, args, arms):
-    """Run one motion tool. Returns robotd's result, the arms it moved (their wrist cameras come back), and where it
-    sent each one's fingertips (cm), for the ones a position was asked of."""
-    if name == "home":
-        _pitch.clear()
-        which = args.get("arms", "both")
-        return robot.home(None if which == "both" else which, args.get("width")), [], {}
-    if name == "open":
-        side = args["arm"]
-        width = scene().stroke_mm if args.get("width") is None else args["width"]
-        return robot.move(**{side: [{"width": width}]}, speed="slow"), [side], {}
-    if name == "grip":
-        return grip(args["arm"], arms[args["arm"]]), [args["arm"]], {}
-    tilt = None
-    if name == "nudge":
-        side = args["arm"]
-        f, r, u = nudge_frame(side, arms[side]["joints"])
-        d = sum(float(args.get(k) or 0) * v for k, v in (("forward", f), ("right", r), ("up", u)))
-        rel, pitch = [round(float(v), 2) for v in d], _pitch.get(side, arms[side]["pitch"])
-        for give in PITCH_GIVE:  # near the edge of the reach the same tilt can be just out of it: the nearest one in
-            kf = {"rel": rel, "pitch": float(np.clip(pitch + give, 0, 90))}
-            if robot.move(**{side: [kf]}, check_only=True).get("outcome") == "done":
-                break
-        else:  # nothing reaches: the move says why at the tilt it has
-            kf = {"rel": rel, "pitch": pitch}
-        if kf["pitch"] != pitch:
-            tilt = f"pitch {pitch:.0f} doesn't reach there: tilted to {kf['pitch']:.0f}"
-        frames = {side: [kf]}
-        speed = "slow"
-    else:  # move
-        if args.get("check_only"):
-            return robot.move(args.get("left"), args.get("right"), args.get("speed"), True), [], {}
-        frames = {s: args[s] for s in ("left", "right") if args.get(s)}
-        speed = args.get("speed")
-    if not frames:
-        return dict(outcome="refused", fail="check", why="move needs keyframes for left, right or both"), [], {}
-    r = robot.move(frames.get("left"), frames.get("right"), speed)
-    if r.get("outcome") != "refused":
-        for s, kfs in frames.items():
-            pitched = [kf["pitch"] for kf in kfs if kf.get("pitch") is not None]
-            if pitched:
-                _pitch[s] = float(pitched[-1])
-            elif any(set(kf) & {"xy", "z", "rel"} for kf in kfs):
-                _pitch.pop(s, None)  # moved at the steepest pitch that reaches: what that is, only the arm knows
-    if tilt and r.get("outcome") == "done":
-        r["tilt"] = tilt
-    sent = targets({s: arms[s]["tip_cm"] for s in frames}, frames) if r.get("outcome") != "refused" else {}
-    return r, list(frames), sent
-
-
-def run(name, args):
-    """Run one tool call. Returns (text for the model, the look that followed it: images and positions, robotd's
-    result for a motion or None)."""
-    if name == "look":
-        seen = look(["overhead"] + (list(WRISTS.values()) if args.get("cams") == "wrists" else []))
-        return state_text(seen), seen, None
-    if name not in NAMES - {"done"}:
-        return f"unknown tool {name!r}", None, None
-    if name in ("nudge", "grip", "open") and args.get("arm") not in WRISTS:
-        return f"bad arguments for {name}: arm is left or right", None, None
-    if name == "move" and any(not isinstance(args.get(s) or [], list) for s in ("left", "right")):
-        return "bad arguments for move: left and right are lists of keyframes", None, None
-    r, moved, sent = motion(name, args, robot.status()["arms"])
-    out = {k: r[k] for k in ("outcome", "fail", "why", "tilt", "width_mm", "object_width_mm", "squeeze_ma", "checked")
-           if r.get(k) is not None}
-    seen = look(["overhead"] + [WRISTS[s] for s in moved])
-    for s, p in sent.items():
-        got = np.array(seen["arms"][s]["tip_cm"])
-        off = float(np.linalg.norm(got - p))
-        if off > SHORT_CM:
-            out.setdefault("short", {})[s] = f"sent to {np.round(p, 1).tolist()}, got to {got.tolist()}: {off:.1f} cm"
-    out["events"] = [e["text"] for e in r.get("events", []) if e.get("kind") != "debug"][-6:]
-    return json.dumps(out) + "\nnow: " + state_text(seen), seen, r
