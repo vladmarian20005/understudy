@@ -74,7 +74,7 @@ class SimCameras:
 class Core:
     def __init__(self, sim_mode=True, speed=1.0, objects="brush", noise=0.0, arm=True, quiet=False,
                  dataset="understudy_pass", datasets=DATASETS, vision=False, stream_cameras=False, sag=True,
-                 faults=None, hd=False):
+                 faults=None, hd=False, jitter=0.0, seed=0):
         self.scene = Scene()
         self.quiet = quiet
         self.events = collections.deque(maxlen=500)
@@ -92,7 +92,7 @@ class Core:
             if hd:
                 from .mjsim import MjWorld
 
-                self.world = MjWorld(self.scene, objects, noise, sag=sag, faults=faults)
+                self.world = MjWorld(self.scene, objects, noise, seed=seed, sag=sag, faults=faults, jitter=jitter)
             else:
                 self.world = sim.SimWorld(self.scene, objects, noise, sag=sag, faults=faults)
             self.world.on_fault = lambda kind, what: self.event(f"simulated fault: {what}", "warn")
@@ -418,10 +418,14 @@ def main():
                     help=f"simulator: fault probabilities, kinds {', '.join(sim.FAULTS)} (e.g. miss=0.1,slip=0.02)")
     ap.add_argument("--trace", metavar="FILE", help="append every request and reply to FILE as JSON lines")
     ap.add_argument("--sag-off", action="store_true", help="no gravity feed-forward and no sag learning")
+    ap.add_argument("--jitter", type=float, default=0.0, metavar="CM",
+                    help="--hd: move each object up to this far from where its scene puts it (and turn it)")
+    ap.add_argument("--seed", type=int, default=0, help="--hd: the layout --jitter draws")
     a = ap.parse_args()
     faults = {k: float(v) for k, v in (f.split("=") for f in a.faults.split(",") if f)}
     core = Core(a.sim, a.speed, a.objects, a.noise / 100, dataset=a.dataset, vision=a.vision,
-                stream_cameras=not a.no_camera_streams, sag=not a.no_sag, faults=faults, hd=a.hd)
+                stream_cameras=not a.no_camera_streams, sag=not a.no_sag, faults=faults, hd=a.hd, jitter=a.jitter,
+                seed=a.seed)
     if a.sag_off:
         core.ctl.freeze_sag()
     quit_event = threading.Event()

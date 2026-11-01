@@ -38,6 +38,7 @@ CAM_MOUNT = "wrist_cam_mount_32x32_uvc_so101"  # replaces wrist_roll_follower_so
 JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
 
 TIMESTEP = 0.002  # s
+NOSLIP = 5  # the no-slip solver's passes: without it, what the jaws squeeze creeps out of them
 JOINT_SPEED = 180.0  # deg/s, as sim.py
 GRIP_SPEED = 120.0  # mm/s
 GRIP_MAX_NM = 2.94  # the STS3215's stall torque at 12 V
@@ -57,6 +58,9 @@ SCENES = {
     "brush": [("brush", "box", (0.20, 0.03, 0.025), (40, 140, 230), -0.08, 0.24, 10.0)],
     "blocks": [("red block", "box", (0.04, 0.04, 0.04), (50, 50, 210), -0.12, 0.22, 0.0),
                ("blue block", "box", (0.04, 0.04, 0.04), (210, 120, 40), 0.10, 0.26, 30.0)],
+    "cubes": [("left cube", "box", (0.03, 0.03, 0.03), (235, 206, 135), -0.22, 0.20, 10.0),
+              ("back cube", "box", (0.03, 0.03, 0.03), (235, 206, 135), -0.15, 0.25, -8.0),
+              ("right cube", "box", (0.03, 0.03, 0.03), (235, 206, 135), -0.065, 0.20, -40.0)],
 }
 MASS = {"ball": 0.057, "tube": 0.09, "box": 0.08}  # kg
 TUBE_WALL = 0.0015  # m
@@ -218,6 +222,7 @@ def build(scene, objects="balls"):
     s.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
     s.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
     s.option.impratio = 10
+    s.option.noslip_iterations = NOSLIP
     v = s.visual
     v.global_.offwidth, v.global_.offheight = 1920, 1440
     v.quality.shadowsize, v.quality.offsamples = 4096, 8
@@ -328,9 +333,26 @@ class MjObject:
         return self.size[2] / 2
 
 
+def jittered(objects, cm, seed):
+    """The scene's objects each moved up to cm in x and y (and turned), none closer than 1 cm to another: so a run is
+    tested on a layout it wasn't tuned on."""
+    rng = np.random.default_rng(seed)
+    objs = list(SCENES[objects] if isinstance(objects, str) else objects)
+    reach = [max(np.atleast_1d(o[2])[:2]) / 2 for o in objs]  # a rough radius per object
+    for _ in range(200):
+        out = [(n, k, s, c, x + rng.uniform(-cm, cm) / 100, y + rng.uniform(-cm, cm) / 100,
+                yaw + rng.uniform(-30, 30)) for n, k, s, c, x, y, yaw in objs]
+        if all(math.hypot(a[4] - b[4], a[5] - b[5]) > reach[i] + reach[j] + 0.01
+               for i, a in enumerate(out) for j, b in enumerate(out) if i < j):
+            return out
+    raise ValueError(f"no layout with the objects {cm} cm from where they stand that keeps them apart")
+
+
 class MjWorld:
-    def __init__(self, scene, objects="balls", noise=0.0, seed=0, sag=True, faults=None):
+    def __init__(self, scene, objects="balls", noise=0.0, seed=0, sag=True, faults=None, jitter=0.0):
         self.scene = scene
+        if jitter:
+            objects = jittered(objects, jitter, seed)
         self.model, objs = build(scene, objects)
         m = self.model
         self.data = mujoco.MjData(m)
@@ -543,8 +565,8 @@ class MjWorld:
     # ---- cameras -----------------------------------------------------------------------------------------------------
     def render(self, name, width, height, snap=None, camera=None):
         """A camera's image (BGR) at a snapshot: overhead, left_wrist or right_wrist, or a free mujoco.MjvCamera.
-        Every render runs on the one render thread: OpenGL contexts used from two threads deadlock (31 Oct, robotd
-        hung in CGLLockContext when a request for images met the camera streams)."""
+        Every render runs on the one render thread: OpenGL contexts used from two threads deadlock (robotd hangs in
+        CGLLockContext when a request for images meets the camera streams)."""
         snap = snap or self.snapshot()
         return self.render_pool.submit(self._render, name, width, height, snap, camera).result()
 
