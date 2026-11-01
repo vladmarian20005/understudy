@@ -1,0 +1,11 @@
+lerobot[feetech]==0.5.1
+meta-sam-parser==0.1.0
+mujoco==3.6.0
+numpy
+opencv-python
+openai
+pandas
+pytest
+pyzmq
+requests
+scipy
