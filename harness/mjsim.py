@@ -60,7 +60,10 @@ BALL = (60, 225, 210)  # BGR
 SCENES = {
     "balls": [("ball 1", "ball", 0.067, BALL, -0.10, 0.22, 0.0), ("ball 2", "ball", 0.067, BALL, -0.17, 0.30, 0.0),
               ("ball 3", "ball", 0.067, BALL, -0.06, 0.31, 0.0),
-              ("tube", "tube", (0.078, 0.26), (30, 28, 26), 0.12, 0.36, 0.0)],
+              # 1 Nov: was 26 cm tall at (12, 36): out of the left arm's reach, at the right's limit, its top off the
+              # overhead image (SAM put it at y 45) and too tall to drop into but level, where a held ball slides
+              # 1-2 cm in the jaws. A 3-ball can, in the middle: the left arm drops balls in (2-3 of 3 in a row).
+              ("tube", "tube", (0.078, 0.21), (30, 28, 26), 0.04, 0.30, 0.0)],
     "brush": [("brush", "box", (0.20, 0.03, 0.025), (40, 140, 230), -0.08, 0.24, 10.0)],
     "blocks": [("red block", "box", (0.04, 0.04, 0.04), (50, 50, 210), -0.12, 0.22, 0.0),
                ("blue block", "box", (0.04, 0.04, 0.04), (210, 120, 40), 0.10, 0.26, 30.0)],

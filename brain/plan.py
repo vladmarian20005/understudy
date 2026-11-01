@@ -69,7 +69,12 @@ Rules:
   the middle, keep one a little to the side until the other is in place.
 - Before you plan a pose, check it against the reach and height facts above: a target one arm can't reach gets
   refused. A standing object's top is at its height; held upright and lifted, it is higher still.
-- To put something into something: hold it above the opening ("move above" by 2-4 cm), check, then open.
+- To put something into something: hold it above the opening ("move above" by 2-4 cm, leaving pitch out: it picks
+  one that reaches, level over a tall thing), check, then open.
+- Copy what the video achieves, not each hand motion. A person holds a container up to fill it; the arms can leave
+  it standing where it is and bring things to it, when one arm reaches its opening. Don't pick up or move a tall
+  thing whose width is within about 10 mm of the jaws' 84 mm: the grip slips and a wrong approach knocks it over.
+  If nothing can reach where it stands, say so (done, not success) rather than knock it about.
 - Add a "check" to a step whose outcome you can't be sure of (a grasp, letting go into something, a tilt): say what
   should be true after it. Skip it for plain moves.
 - Reply with JSON only, no other text.

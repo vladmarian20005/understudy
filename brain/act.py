@@ -149,14 +149,17 @@ def grasp(side, arms, object, height=None, pitch=None, lift=5.0, offset=None):
     yaw = np.degrees(np.arctan2(head[1], head[0])) + 90
     width = min(tools.scene().stroke_mm, wide * 10 + WIDE_MM)
     head3 = np.append(head, 0.0)
+    approach_starts = {}  # pitch -> where the grip point starts its approach
 
     def approach(p):
         """Steep: the open jaws come straight down round it from above its top. Flatter: down in front of it, then
         in along the fingers (31 Oct: a ball 22 cm from the base had no room in front for that)."""
         if p >= STEEP:
-            return [kf(g + [0, 0, max(OVER_CM, H - h + 3)], head, p, yaw, width=width), kf(g, head, p, yaw)]
+            approach_starts[p] = g + [0, 0, max(OVER_CM, H - h + 3)]
+            return [kf(approach_starts[p], head, p, yaw, width=width), kf(g, head, p, yaw)]
         down = g - head3 * (wide / 2 + GAP_CM)
-        return [kf(down + [0, 0, OVER_CM], head, p, yaw, width=width), kf(down, head, p, yaw), kf(g, head, p, yaw)]
+        approach_starts[p] = down + [0, 0, OVER_CM]
+        return [kf(approach_starts[p], head, p, yaw, width=width), kf(down, head, p, yaw), kf(g, head, p, yaw)]
 
     # tall: from the side, as level as reaches (31 Oct: tilted 30-75 deg at a 26 cm tube, the wrist all wrong);
     # otherwise the steepest that reaches
@@ -168,7 +171,18 @@ def grasp(side, arms, object, height=None, pitch=None, lift=5.0, offset=None):
     else:
         raise Failed(f"{side} can't reach a grasp on {object} at {h:.0f} cm high"
                      + ("" if pitch is None else f" at pitch {pitch}"))
+    held_pitch = sent_pitch(side, arms[side])
     tools._pitch[side] = float(p)
+    # Coming down from well above (after letting go over a tall thing): across at this height first, then down, so
+    # the arm doesn't sweep through what it was above (1 Nov: it knocked the tube it had just filled into the next
+    # ball). A start that can't be reached that way goes straight, as before.
+    now = grip_point(side, arms[side])
+    start = approach_starts[p]
+    if now[2] - start[2] > 5 and np.linalg.norm(now[:2] - start[:2]) > 3:
+        # at the pitch it has: turning the wrist steep right above the tall thing swings the fingers down into it
+        across = kf([start[0], start[1], now[2]], head, held_pitch, None)
+        if robot.move(**{side: [across] + frames}, check_only=True).get("outcome") == "done":
+            frames = [across] + frames
     yield Stage(frames[:-1])
     yield from reach(side, g, head, p, yaw)
     regrips = 0
@@ -220,11 +234,47 @@ def move(side, arms, to=None, above=None, by=3.0, rel=None, pitch=None, yaw=None
         raise Failed("move needs to, above or rel")
     head = heading(side, goal) if np.linalg.norm(goal[:2] - tools.scene().base_xy(side) * 100) > 8 else \
         arm_heading(side, a)
-    if yaw is None and p < 30:  # near level the jaw line can only lie square to where the fingers point
-        yaw = np.degrees(np.arctan2(head[1], head[0])) + 90
+
+    def jaw(p):  # near level the jaw line can only lie square to where the fingers point
+        return np.degrees(np.arctan2(head[1], head[0])) + 90 if yaw is None and p < 30 else yaw
+
+    # Not told a pitch: the one it has if that reaches, else the nearest flatter one that does (flatter reaches
+    # higher and farther), else steeper. 1 Nov: a ball gripped at 80 then sent 3 cm above a 26 cm tube was refused at
+    # 80 and 30 and went in at 0; the plan had left pitch out, so the whole run stalled on it.
+    tries = [p] if pitch is not None else [p] + [q for q in reversed(PITCHES) if q < p] + [q for q in PITCHES if q > p]
+    # Going well up (onto something tall): up first where it is, then across, so neither the gripper nor what it
+    # holds sweeps through the thing it's going above (1 Nov: a ball carried low-to-high in one line knocked the tube
+    # over three times out of three).
+    rise = goal[2] - g0[2] > 5 and np.linalg.norm(goal[:2] - g0[:2]) > 3
+    up = np.array([g0[0], g0[1], goal[2]])
+
+    def ok(frames):
+        return robot.move(**{side: frames}, check_only=True).get("outcome") == "done"
+
+    found = None
+    for lift_first in ([True, False] if rise else [False]):  # straight across only when going up first can't
+        for q in tries:
+            frames = ([kf(up, head, q, jaw(q))] if lift_first else []) + [kf(goal, head, q, jaw(q))]
+            if (len(tries) == 1 and not lift_first) or ok(frames):
+                found = (q, lift_first)
+                break
+        if found:
+            break
+    if found is None:
+        raise Failed(f"{side} can't reach {[round(float(v), 1) for v in goal]} cm at any pitch")
+    p, rise = found
     tools._pitch[side] = p
-    yield from reach(side, goal, head, p, yaw, speed or "normal")
-    return {}
+    if rise:
+        yield Stage([kf(up, head, p, jaw(p))], speed or "normal")
+    arms = yield from reach(side, goal, head, p, jaw(p), speed or "normal")
+    held = (arms or {}).get(side, {}).get("held")
+    if above is not None and held:
+        # What it holds needn't sit at the grip point (a ball gripped steep and turned level ends up 1-2 cm along the
+        # fingers): line what it holds up over the target by where robotd has it, once.
+        off = np.array(held["center_cm"][:2], dtype=float) - grip_point(side, arms[side])[:2]
+        if 0.4 < np.linalg.norm(off) < 4:
+            arms = yield from reach(side, goal - np.append(off, 0.0), head, p, jaw(p), "slow")
+    return {} if pitch is not None or p == tries[0] else dict(pitch=p)
 
 
 def tilt(side, arms, deg):
