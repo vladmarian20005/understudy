@@ -48,13 +48,6 @@ ARM_TYPE, WORLD_TYPE = 2, 1  # contype bits: arms touch the table and objects, n
 
 PLA = (0.86, 0.30, 0.20, 1.0)  # the arms are printed red-orange
 SERVO = (0.07, 0.07, 0.08, 1.0)
-# The wrist camera's lens in gripper_link: 8 mm in front of the 32x32 board's centre on the mount's plate, looking
-# 25 deg in toward the fingertips (from the mount's CAD). Image up is away from the fingers: the jaws come in at the
-# bottom.
-WRIST_LENS = (0.0025, -0.0676, -0.0041)
-WRIST_VIEW = (0.0, 0.4226, -0.9063)
-WRIST_HFOV = 100.0  # deg
-
 BALL = (60, 225, 210)  # BGR
 # name, kind, size (m: box L x W x H, ball diameter, tube outer diameter x height), colour (BGR), x, y (m), yaw (deg)
 SCENES = {
@@ -118,7 +111,7 @@ def tube_mesh(r_out, r_in, z0, z1, floor=None, n=64):
 
 
 # ---- the model -------------------------------------------------------------------------------------------------------
-def arm_spec():
+def arm_spec(wrist):
     """One follower: the SO-ARM100 model with the wrist-camera mount as the fixed jaw, red-orange PLA, and collision
     pieces for the jaws. A whole jaw's convex hull would fill the gap between the fingers, so each jaw collides as
     convex slices of its mesh; the rest of the arm collides as its parts' hulls."""
@@ -162,11 +155,11 @@ def arm_spec():
     a.joint("gripper").range[0] = lo
     a.actuator("gripper").ctrlrange[0] = lo
     # the lens: z_cam is minus the view; y_cam (image up) is the camera's offset from the fingers, -y of gripper_link
-    z = -np.array(WRIST_VIEW)
+    z = -np.array(wrist["view"])
     y = np.array([0.0, -1.0, 0.0]) - z * (z @ [0.0, -1.0, 0.0])
     y /= np.linalg.norm(y)
-    vfov = 2 * math.degrees(math.atan(math.tan(math.radians(WRIST_HFOV) / 2) * 3 / 4))
-    gripper.add_camera(name="wrist", pos=WRIST_LENS, quat=quat(np.column_stack([np.cross(y, z), y, z])), fovy=vfov)
+    vfov = 2 * math.degrees(math.atan(math.tan(math.radians(wrist["hfov_deg"]) / 2) * 3 / 4))
+    gripper.add_camera(name="wrist", pos=wrist["lens"], quat=quat(np.column_stack([np.cross(y, z), y, z])), fovy=vfov)
     return a
 
 
@@ -252,7 +245,7 @@ def build(scene, objects="balls"):
                 type=mujoco.mjtLightType.mjLIGHT_DIRECTIONAL, diffuse=[0.22] * 3, specular=[0.0] * 3, castshadow=False)
     for side in SIDES:
         B = scene.arms[side].base
-        w.add_frame(pos=B[:3, 3], quat=quat(B[:3, :3])).attach_body(arm_spec().body("base"), side + "/", "")
+        w.add_frame(pos=B[:3, 3], quat=quat(B[:3, :3])).attach_body(arm_spec(scene.wrist_cad).body("base"), side + "/", "")
     objs = []
     for i, (name, kind, size, color, x, y, yaw) in enumerate(SCENES[objects] if isinstance(objects, str) else objects):
         body, extent = add_object(s, i, name, kind, size, color, x, y, yaw)

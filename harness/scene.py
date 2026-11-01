@@ -52,6 +52,10 @@ class Scene:
         d = json.load(open(path))
         g = d["gripper"]
         self.stroke_mm = float(g["stroke_mm"])
+        self.fixed_tip = np.array(g.get("fixed_tip", (0.0, 0.0, 0.0)), dtype=float)
+        self.opening = (g.get("opening_deg"), g.get("opening_mm"))  # the fingertip opening against the jaw's angle
+        self.wrist_cad = g.get("wrist_camera")  # the lens as designed, per scene.json's gripper
+        self.wrist_measured = {s: d["arms"][s].get("wrist") for s in SIDES}  # as calibrated (calib_board)
         self.arms = {}
         self.ports = {}
         for s in SIDES:
@@ -94,6 +98,23 @@ class Scene:
                 x -= np.arctan2(a[0], a[1]) * READY_Y  # turning about the base by the heading's error
             self._ready[side] = q
         return self._ready[side].copy()
+
+    def wrist_lens(self, side, size, measured=True):
+        """side's wrist camera for an image of size (w, h): its pose in gripper_link (OpenCV axes: x image right, y image
+        down, z the way it looks), K and distortion. As calibrated when measured and there is a calibration, else from
+        the mount's CAD with no distortion."""
+        cal = self.wrist_measured[side] if measured else None
+        if cal:
+            K = np.array(cal["K"], dtype=float)
+            K[:2] *= size[0] / cal["size"][0]
+            return np.array(cal["cam_in_gripper"], dtype=float), K, np.array(cal["dist"], dtype=float)
+        view = np.array(self.wrist_cad["view"], dtype=float)
+        up = np.array([0.0, -1.0, 0.0]) - view * (view @ [0.0, -1.0, 0.0])  # image up: away from the fingers
+        up /= np.linalg.norm(up)
+        T = np.eye(4)
+        T[:3, :3], T[:3, 3] = np.column_stack([np.cross(view, up), -up, view]), self.wrist_cad["lens"]
+        f = size[0] / 2 / np.tan(np.radians(self.wrist_cad["hfov_deg"]) / 2)
+        return T, np.array([[f, 0, size[0] / 2], [0, f, size[1] / 2], [0, 0, 1.0]]), np.zeros(5)
 
     def middle(self):
         """The point on the table halfway between the bases, 25 cm forward: where handovers meet (closer in, the taker

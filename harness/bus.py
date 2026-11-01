@@ -9,7 +9,7 @@ import os
 
 import numpy as np
 
-from .kin import CALIB_DIR, JOINTS
+from .kin import CALIB_DIR, JOINTS, MOTOR_STEPS
 
 LEADER_CALIB_DIR = os.path.join(os.path.dirname(os.path.dirname(CALIB_DIR)), "teleoperators", "so_leader")
 
@@ -24,15 +24,22 @@ class CalibrationMismatch(Exception):
 
 
 class BusArmIO:
-    def __init__(self, port, calibration_id, stroke_mm, bus=None):
+    def __init__(self, port, calibration_id, stroke_mm, bus=None, opening=(None, None)):
+        """opening: the gripper's (jaw degrees from closed, fingertip mm) from scene.json: the jaw swings, so the opening
+        isn't linear in the servo's 0-100 % (a 67 mm opening sits at 53 % of the travel). Without it, or without a
+        calibration to give the jaw's travel, it counts as linear."""
         from lerobot.motors import Motor, MotorCalibration, MotorNormMode
 
         self.stroke = float(stroke_mm)
         self.names = JOINTS + ["gripper"]
+        self.opening = opening
+        self.travel = None  # the jaw's travel closed to open (deg), from the calibration
         if bus is None:
             from lerobot.motors.feetech import FeetechMotorsBus
 
             cal = json.load(open(os.path.join(CALIB_DIR, f"{calibration_id}.json")))
+            g = cal["gripper"]
+            self.travel = (g["range_max"] - g["range_min"]) * 360 / (MOTOR_STEPS - 1)
             motors = {j: Motor(cal[j]["id"], "sts3215", MotorNormMode.DEGREES) for j in JOINTS}
             motors["gripper"] = Motor(cal["gripper"]["id"], "sts3215", MotorNormMode.RANGE_0_100)
             bus = FeetechMotorsBus(port=port, motors=motors,
@@ -56,12 +63,25 @@ class BusArmIO:
     def read(self):
         self.fresh()
         pos = self.bus.sync_read("Present_Position", num_retry=RETRIES)
-        return np.array([pos[j] for j in JOINTS] + [pos["gripper"] / 100 * self.stroke], dtype=float)
+        return np.array([pos[j] for j in JOINTS] + [self.mm(pos["gripper"])], dtype=float)
 
     def write(self, goal):
         g = {j: float(goal[i]) for i, j in enumerate(JOINTS)}
-        g["gripper"] = float(np.clip(goal[5] / self.stroke * 100, 0, 100))
+        g["gripper"] = self.pct(goal[5])
         self.bus.sync_write("Goal_Position", g, num_retry=RETRIES)
+
+    def mm(self, pct):
+        """The gripper's 0-100 % as the opening at the fingertips, mm."""
+        if self.travel is None or self.opening[0] is None:
+            return pct / 100 * self.stroke
+        return float(np.interp(pct / 100 * self.travel, *self.opening))
+
+    def pct(self, mm):
+        """An opening at the fingertips, mm, as the gripper's 0-100 %."""
+        mm = float(np.clip(mm, 0, self.stroke))
+        if self.travel is None or self.opening[0] is None:
+            return mm / self.stroke * 100
+        return float(np.clip(np.interp(mm, self.opening[1], self.opening[0]) / self.travel * 100, 0, 100))
 
     def torque(self, on):
         if not on:

@@ -106,8 +106,8 @@ class Core:
             self.world = None
             self.cameras = ZmqCameras()
             self.cameras.wait()
-            ios = {s: BusArmIO(self.scene.ports[s], self.scene.calibration_ids[s], self.scene.stroke_mm)
-                   for s in SIDES}
+            ios = {s: BusArmIO(self.scene.ports[s], self.scene.calibration_ids[s], self.scene.stroke_mm,
+                               opening=self.scene.opening) for s in SIDES}
         sag_file = None if sim_mode else os.path.join(SAG_DIR, "_".join(self.scene.calibration_ids[s] for s in SIDES)
                                                        + ".json")
         self.ctl = Controller(ios, self.world, speed, on_event=self.event).set_arms(self.scene.arms, sag_file)

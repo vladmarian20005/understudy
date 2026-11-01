@@ -148,6 +148,16 @@ def test_real_arm_goes_live_where_it_is():
     assert bus.calls[-1][2]["gripper"] == pytest.approx(100)
 
 
+def test_real_gripper_opening_follows_the_swinging_jaw():
+    """With the jaw's travel known (101 deg on the left arm), a 67 mm opening sits at 53 % of the servo's range, not 68 %:
+    the opening grows fast near closed and slowly near open."""
+    io = BusArmIO("port", "x", 98.0, bus=FakeBus(), opening=Scene().opening)
+    io.travel = 101.4
+    assert io.mm(0) == pytest.approx(0) and io.mm(100) == pytest.approx(97.9, abs=0.3)
+    assert io.pct(67) == pytest.approx(52.6, abs=0.5)
+    assert io.mm(io.pct(40)) == pytest.approx(40, abs=0.1)
+
+
 def test_closing_jaws_square_up_a_skewed_brush(scene):
     """Flat pads turn a free bar square as they close and stop at its width, not at its length across the jaw line
     (what a policy's slightly-off grasp sees on the real gripper)."""

@@ -161,3 +161,16 @@ def test_holding_the_roll_keeps_the_camera_on_top_level_or_steep(scene, side):
             upward = np.append(np.asarray(p[:2]) - arm.base[:2, 3], 0.0)
         assert cam @ upward / np.linalg.norm(upward) > 0.9, (pitch, cam)
         assert abs((R @ arm.jaw)[2]) < 0.1  # the jaws close level
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_the_wrist_lens_is_the_cad_mount_or_the_calibration(side):
+    scene = Scene()
+    T, K, dist = scene.wrist_lens(side, (640, 480), measured=False)
+    assert np.allclose(T[:3, 3], scene.wrist_cad["lens"]) and np.allclose(T[:3, 2], scene.wrist_cad["view"])
+    assert K[0, 2] == 320 and not dist.any()
+    assert T[1, 1] > 0  # image down is toward the fingers (+y of gripper_link)
+    scene.wrist_measured[side] = dict(size=[1280, 960], K=[[1000.0, 0, 640], [0, 1000.0, 480], [0, 0, 1]],
+                                      dist=[0.1, 0, 0, 0, 0], cam_in_gripper=np.eye(4).tolist())
+    T, K, dist = scene.wrist_lens(side, (640, 480))
+    assert K[0, 0] == 500 and K[1, 2] == 240 and dist[0] == 0.1 and np.allclose(T, np.eye(4))
