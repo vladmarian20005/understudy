@@ -335,14 +335,15 @@ class Skills:
             return self.check_holding(arm, "slip")
         return {}
 
-    def move(self, left=None, right=None, speed="normal", check_only=False):
+    def move(self, left=None, right=None, speed="normal", check_only=False, avoid=None):
         """Free-form motion. For each arm a keyframe or a list of them; the k-th keyframes of both arms make one phase,
         and both finish each phase together. A keyframe (table cm, degrees, mm): xy [x, y], z, rel [dx, dy, dz] (from
         where the previous keyframe left it), yaw (the jaw line, mod 180), pitch (90 straight down, 0 level; left
         out: as steep as reaches there), width (the opening). What's left out stays as it was. roll (degrees) turns
         only the wrist from where it is, which tilts what the gripper holds about the fingers' direction; it goes in
         an arm's first keyframe, with nothing but width. Picking up and letting go are grasp and release (they feel
-        for the table); check_only plans and checks without moving."""
+        for the table); check_only plans and checks without moving. avoid: standing things the arms keep clear of,
+        [{"name", "xy" [x, y] cm, "r" cm, "h" cm}] (robotd doesn't see the table's objects as obstacles otherwise)."""
         frames = {}
         for side, kf in (("left", left), ("right", right)):
             if kf is not None:
@@ -382,7 +383,13 @@ class Skills:
                 tips[s] = self.tool_T(s, q0[s])[:3, 3]
             n = max(len(f) for f in frames.values())
             return [Phase(f"move {k + 1}", {s: goal(s, f[k], line, k) for s, f in frames.items() if k < len(f)},
-                          speed=speed) for k in range(n)]
+                          speed=speed, avoid=obstacles) for k in range(n)]
+
+        try:
+            obstacles = tuple((str(o["name"]), float(o["xy"][0]) / 100, float(o["xy"][1]) / 100, float(o["r"]) / 100,
+                               float(o["h"]) / 100) for o in (avoid or ()))
+        except (KeyError, TypeError, ValueError, IndexError):
+            raise Fail("check", 'avoid is a list of {"name", "xy": [x, y], "r", "h"} (cm)')
 
         try:
             try:

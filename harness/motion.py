@@ -23,6 +23,7 @@ MAX_JOINT_STEP = 6.0  # deg per tick: more means the IK jumped to another postur
 TIP_FLOOR = 0.003  # m: the fingertips never go lower
 ARM_FLOOR = 0.02  # m: the rest of the arm stays this high
 ARM_GAP = 0.015  # m between the two arms' outlines
+AVOID_GAP = 0.01  # m between an arm's outline and a standing thing it's told to avoid
 RADII = (0.025, 0.025, 0.025, 0.03, 0.035)  # m: shoulder-upper arm, upper arm-elbow, forearm, wrist, gripper
 CARRY_FLOOR = 0.005  # m: a held object's lowest corner stays this high, except in a phase that lowers the floor
 # m: one that starts lower (just picked up, or being set down) may go this much lower still: lifted by one end, a long
@@ -55,6 +56,7 @@ class Phase:
     speed: str = "normal"
     gap: float = ARM_GAP
     stop_on_contact: bool = False  # the controller ends the phase when a moving arm's fingertips are held up
+    avoid: tuple = ()  # standing things on the table the arms keep AVOID_GAP from: (name, x, y, radius, height), m
 
 
 @dataclass
@@ -95,6 +97,16 @@ def seg_dist(p1, q1, p2, q2):
             elif t > 1:
                 t, s = 1.0, np.clip((b - c) / a, 0, 1)
     return float(np.linalg.norm(p1 + d1 * s - (p2 + d2 * t)))
+
+
+def cylinder_dist(p, q, x, y, r, h, n=8):
+    """About the shortest distance from segment p-q to a cylinder standing on the table (axis at x, y; radius r;
+    height h; flat top), m: from n+1 points along the segment."""
+    t = np.linspace(0.0, 1.0, n + 1)[:, None]
+    pts = p + (q - p) * t
+    dr = np.maximum(np.hypot(pts[:, 0] - x, pts[:, 1] - y) - r, 0.0)
+    dz = np.maximum(pts[:, 2] - h, 0.0)
+    return float(np.min(np.hypot(dr, dz)))
 
 
 def arms_gap(pa, pb):
@@ -199,6 +211,7 @@ class Planner:
         floors = {s: min(phase.goals[s].floor if s in phase.goals else TIP_FLOOR, pts0[s][-1][2]) for s in sides}
         arm_floors = {s: min(ARM_FLOOR, float(np.min(pts0[s][1:-1, 2]))) for s in sides}
         carry_floor = {}  # a held object may start low (just picked up, or set down) but not go lower
+        avoid_start = {}
         for k in list(range(0, n, 2)) + [n - 1]:
             pts = {}
             for s in sides:
@@ -229,6 +242,13 @@ class Planner:
                     if low < floor - 1e-4:
                         raise PlanError("check", f"{phase.name}: the object {s} holds would hit the table "
                                         f"({low * 100:.1f} cm)", phase.name)
+            for s in sides:  # standing things on the table
+                for name, x, y, r, h in phase.avoid:
+                    d = min(cylinder_dist(pts[s][i], pts[s][i + 1], x, y, r, h) - RADII[i] for i in range(len(pts[s]) - 1))
+                    keep = avoid_start.setdefault((s, name), min(AVOID_GAP, d - 0.002) if k == 0 else AVOID_GAP)
+                    if d < keep:  # an arm that starts closer (just let go of it) may only move away
+                        raise PlanError("check", f"{phase.name}: {s} arm would hit the {name} standing at "
+                                        f"({x * 100:.0f}, {y * 100:.0f}) cm", phase.name)
             if len(sides) == 2:
                 gap = arms_gap(pts[sides[0]], pts[sides[1]])
                 if gap < phase.gap:
