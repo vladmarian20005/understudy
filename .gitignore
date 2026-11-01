@@ -11,3 +11,5 @@ clips/
 sam_out/
 .sam31_budget.json
 harness/scene.json.bak
+.gstack/
+plans/
