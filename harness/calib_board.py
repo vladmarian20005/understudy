@@ -55,7 +55,6 @@ CLEAR_CM = 7.0  # every point of the arm stays this far over the screen
 SETTLE_S = 1.2  # held still this long before the joints and images are read
 MIN_CORNERS = 8
 # fit
-PX_SIGMA = 1.0
 MOUNT_DEG, MOUNT_MM, ROLL_DEG, TIP_PX, TILT_DEG = 3.0, 3.0, 2.0, 4.0, 2.0  # how far the fit may stray from the CAD and the
 # measured roll offsets, and a base from level, before it pays like one pixel; and how close the fixed fingertip's
 # projection should come to --tip; and how well PnP gives a camera's pose from one view
