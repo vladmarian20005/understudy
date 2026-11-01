@@ -36,6 +36,22 @@ def test_the_simulated_arms_sag_like_the_real_ones(core):
     assert 5 < tip_error_mm(core, "left") < 20  # the real arms: 1-1.5 cm when extended
 
 
+def test_holding_still_trims_away_what_the_sag_model_misses(core):
+    core.ctl.sag = {s: gravity.SagModel(np.zeros(5)) for s in core.ctl.sag}  # a model that compensates nothing
+    core.ctl.sag_learning = True
+    learn = gravity.SagModel.learn
+    gravity.SagModel.learn = lambda *a: None  # and doesn't learn: only the trim can close the gap
+    try:
+        run(core, "home")
+        end = core.ctl.now() + 1.0
+        while core.ctl.now() < end:
+            time.sleep(0.005)
+        assert tip_error_mm(core, "left") < 1.5  # 5-20 mm without it (above)
+        assert 0 < np.max(np.abs(core.ctl.trim["left"])) <= 3.0
+    finally:
+        gravity.SagModel.learn = learn
+
+
 def test_the_sag_is_learned_while_holding_and_compensated(core):
     run(core, "home")
     for s in ("left", "right"):

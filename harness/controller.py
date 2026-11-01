@@ -7,7 +7,11 @@ Torque is only switched on by arm(), which first sets every goal to where the mo
 
 Gravity: every goal is written with a feed-forward offset against the arm's sag (gravity.py), and while an arm holds
 still the controller learns its compliance from the encoders, so the arms end where they're told to. Not while its
-gripper squeezes something: the object's weight would read as a softer arm.
+gripper squeezes something: the object's weight would read as a softer arm. The servos also stick: where a joint
+settles depends on the way it came (the same spot 1 cm low from one side, 1 cm high from the other), which no gravity
+model fits. So while it holds still, under the same conditions, a trim walks
+each joint's command toward what's left of its error, TRIM_GAIN of it at a time and at most TRIM_MAX_DEG, until a new
+goal resets it. It only ever pulls toward the goal, never past what was asked.
 
 Contact: in a trajectory marked contact (a touch-down), a moving arm whose measured fingertips rise CONTACT_M above the
 commanded ones, compared with where they were when the trajectory started (so a sag estimate that's still off doesn't
@@ -47,7 +51,7 @@ SETTLE_TICKS = 50  # or after this long
 SETTLE_FAIL_DEG = 5.0  # still this far off by then: the arm is stuck (blocked), not slow
 TEMP_EVERY = 100  # ticks
 WARM_C, HOT_C = 55, 62
-TEMP_MAX_C = 100  # a reading above this is a garbled packet, not heat: the servo would be dead (31 Oct: 189-252 C)
+TEMP_MAX_C = 100  # a reading above this is a garbled packet, not heat: the servo would be dead
 JUMP_DEG = 25.0  # no servo turns this far in one tick: a reading that jumps this far is garbled
 JUMP_TICKS = 3  # unless it keeps reading there
 TAKEOVER_DEG = 8.0
@@ -61,6 +65,9 @@ CONTACT_TICKS = 3
 LEARN_AFTER = 15  # ticks an arm must hold still before its sag is learned from it
 LEARN_EVERY = 5
 LEARN_MIN_Z = 0.03  # m: only from fingertips this high (not resting on the table)
+TRIM_GAIN = 0.5
+TRIM_MAX_DEG = 3.0
+TRIM_DEADBAND_DEG = 0.15
 SQUEEZING_MM = 2.0  # the gripper is commanded this much tighter than it is: it's holding something
 STREAM_DEG_S = 150.0  # how fast a streamed goal may move the joints
 STREAM_MM_S = 120.0  # and the gripper
@@ -79,6 +86,7 @@ class Controller:
         self.mode = {s: "off" for s in ios}
         self.target = {}  # streamed pose targets, while a policy drives
         self.sag = {s: SagModel() for s in ios}
+        self.trim = {s: np.zeros(5) for s in ios}  # what holding still has added to each arm's command
         self.arms_k = {}  # side -> kin.Arm, for the gravity offsets (set_arms)
         self.still = {s: 0 for s in ios}  # ticks each arm's goal hasn't changed
         self.free = {s: False for s in ios}  # it has moved since torque on: not still lying where it was switched off
@@ -125,8 +133,8 @@ class Controller:
         return self
 
     def freeze_sag(self):
-        """No feed-forward and no learning, and nothing saved over the learned file (31 Oct: a model learned from
-        stalled arms pulled the stretched left arm about 4 cm short)."""
+        """No feed-forward and no learning, and nothing saved over the learned file: a model learned from stalled arms
+        can pull a stretched arm centimetres short."""
         self.sag = {s: SagModel((0.0,) * 5) for s in self.ios}
         self.sag_learning = False
         self.sag_file = None
@@ -140,12 +148,15 @@ class Controller:
         return self
 
     def command(self, s, goal=None):
-        """What is written to arm s's servos for a goal: the goal plus the learned sag offset."""
+        """What is written to arm s's servos for a goal: the goal plus the learned sag offset, and for the goal it holds
+        the trim."""
         g = self.goal[s] if goal is None else goal
         if s not in self.arms_k:
             return g.copy()
         cmd = g.copy()
         cmd[:5] += self.sag[s].offset(self.arms_k[s], g)
+        if goal is None:
+            cmd[:5] += self.trim[s]
         return cmd
 
     def close(self):
@@ -444,24 +455,33 @@ class Controller:
                 return
 
     def _learn_sag(self):
+        traj = self.queue[0] if self.queue else None
         for s in self.ios:
-            moving = self.mode[s] in ("moving", "policy")
+            # a trajectory that has played out and is settling on its last goal counts as holding still (not a
+            # touch-down's: its goal is under what it rests on): the trim then closes the gap before the settle check
+            # calls the arm stuck (reaching far, a shoulder can settle 5 deg short)
+            settling = bool(traj and self.settle > 0 and s in traj.rows and not traj.contact)
+            moving = self.mode[s] in ("moving", "policy") and not settling
             last = getattr(self, "_last_goal", {}).get(s)
             if moving or last is None or not np.allclose(last[:5], self.goal[s][:5]):
                 self.still[s] = 0
+                self.trim[s][:] = 0.0
                 if moving:
                     self.contact.pop(s, None)
                     self.free[s] = True
             else:
                 self.still[s] += 1
             holding = self.goal[s][5] < self.q[s][5] - SQUEEZING_MM
-            if (self.mode[s] == "hold" and s in self.arms_k and s not in self.contact and not holding
+            if ((self.mode[s] == "hold" or settling) and s in self.arms_k and s not in self.contact and not holding
                     and self.still[s] >= LEARN_AFTER and self.still[s] % LEARN_EVERY == 0):
                 arm = self.arms_k[s]
-                # not from an arm still lying where torque came on, folded up or on the table: 31 Oct that taught
-                # the model nonsense (the left shoulder ~0, the right one the maximum)
+                # not from an arm still lying where torque came on, folded up or on the table: that teaches the model
+                # nonsense
                 if self.sag_learning and arm.tool(self.q[s])[0][2] > LEARN_MIN_Z and self.free[s]:
-                    self.sag[s].learn(arm, self.command(s), self.q[s])
+                    self.sag[s].learn(arm, self.command(s, self.goal[s]), self.q[s])  # the model's part, not the trim
+                    err = self.goal[s][:5] - self.q[s][:5]
+                    err[np.abs(err) < TRIM_DEADBAND_DEG] = 0.0
+                    self.trim[s] = np.clip(self.trim[s] + TRIM_GAIN * err, -TRIM_MAX_DEG, TRIM_MAX_DEG)
         self._last_goal = {s: v.copy() for s, v in self.goal.items()}
 
     def _reflexes(self):
