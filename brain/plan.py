@@ -26,7 +26,7 @@ from .prompt import RIG
 
 SHAPES = ["cylinder", "box", "cup", "bowl", "ball"]  # plain shape words SAM also looks for, in case a name misses
 MAX_STEPS = 80
-MAX_CALLS = 50
+MAX_CALLS = 120  # a check after every step (1 Nov), so about one call per step
 
 SYSTEM = RIG + """
 You plan and run a task on these arms. You first make the whole plan; then it runs step by step, with no call to you
@@ -75,8 +75,10 @@ Rules:
   it standing where it is and bring things to it, when one arm reaches its opening. Don't pick up or move a tall
   thing whose width is within about 10 mm of the jaws' 84 mm: the grip slips and a wrong approach knocks it over.
   If nothing can reach where it stands, say so (done, not success) rather than knock it about.
-- Add a "check" to a step whose outcome you can't be sure of (a grasp, letting go into something, a tilt): say what
-  should be true after it. Skip it for plain moves.
+- After every step you get fresh images from all three cameras and judge it before anything else moves. Give each
+  step a "check": what the images should show if it worked. The wrist cameras look along the fingers: to see into
+  something from above (whether a thing landed inside a container), a step can hold that wrist over it pointing
+  down (pitch 90) and look.
 - Reply with JSON only, no other text.
 """
 
@@ -87,8 +89,14 @@ PLAN_ASK = """Make the plan. Reply with JSON:
             "why": "a few words"}],
  "done_when": "what the finished table looks like"}"""
 
-CHECK_ASK = """Reply with JSON:
-{"ok": true or false, "why": "what you see, one sentence",
+CHECK_ASK = """Judge only from the images and the object list above, not from the plan: the plan says what should
+have happened, the motors only say the arms moved, and neither sees where things ended up. Look at every image
+first. Something you can't see clearly isn't done: a thing let go over a container is in it only if no image shows
+it anywhere else (on the table, beside the container, still in the jaws). When it isn't, go back: fix it before
+the rest of the plan.
+Reply with JSON:
+{"seen": "what each image shows about the things this step moved, image by image, before any verdict",
+ "ok": true or false, "why": "your verdict from what you saw, one sentence",
  "next": [only the steps to run now, same format as the plan's; omit if none: the rest of the plan stays],
  "replace_rest": true if those steps replace the rest of the plan (re-plan), false to run them before the rest,
  "done": {"success": true or false, "summary": "..."} only when the task is finished or can't be done}"""
@@ -270,15 +278,14 @@ class Run:
             if stopped:
                 return self.end(False, f"a person stopped the arms: {stopped}", t0)
             failed = any("failed" in r for r in results.values())
-            if not (step.get("check") or failed):
-                i += 1
-                continue
-            sides = [s for s in ("left", "right") if step.get(s)]
-            seen = self.look(sides, tag=f"{n:02d}")
+            # every step is checked by eye (1 Nov: checked only where the plan asked, Muse took "ball in the can" on
+            # trust while the simulator showed all three on the table): all three cameras, fresh
+            seen = self.look(("left", "right"), tag=f"{n:02d}")
             ahead = "; ".join(f"{k}. {describe(s)}" for k, s in enumerate(steps[i + 1:i + 6], 1)) or "none"
             v = self.ask(self.seen_parts(
                 f"Step {n} ran: {describe(step)}\nResults: {json.dumps(results)}\n"
-                f"Check: {step.get('check') or 'it failed: what now?'}\nNext in the plan: {ahead}"
+                f"Should be true now: {step.get('check') or step.get('why') or 'what the step was for'}"
+                + (" (a part of it failed: what now?)" if failed else "") + f"\nNext in the plan: {ahead}"
                 + ("" if len(steps) <= i + 6 else f" (and {len(steps) - i - 6} more)"), seen)
                 + [{"type": "text", "text": CHECK_ASK}], effort="low")
             self.log(f"    check: {'ok' if v.get('ok') else 'not ok'}: {v.get('why', '')}")

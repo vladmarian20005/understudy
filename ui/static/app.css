@@ -251,6 +251,7 @@ details.reasoning p { font-size: 12.5px; color: var(--text-2); font-style: itali
   font-size: 12px; font-weight: 600; }
 .frames { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 10px; }
 .frames figure { margin: 0; }
+.frames.one { grid-template-columns: 1fr; }
 .frames img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 8px; cursor: zoom-in; border: 1px solid var(--line); }
 .frames figcaption { font-size: 10.5px; color: var(--text-3); margin-top: 3px; text-align: center; }
 .decision { display: inline-flex; margin-top: 10px; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; }
@@ -319,7 +320,7 @@ details.reasoning p { font-size: 12.5px; color: var(--text-2); font-style: itali
   background: rgba(0, 0, 0, 0.45); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
 .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #ff453a; animation: blink 1.4s infinite; }
 
-.steps { list-style: none; display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin: 20px 0 0; padding: 16px 18px;
+.steps { list-style: none; display: grid; grid-template-columns: repeat(6, 1fr); gap: 0; margin: 20px 0 0; padding: 16px 18px;
   background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); border: 1px solid var(--line); }
 .step { display: flex; align-items: center; gap: 10px; position: relative; padding-right: 10px; min-width: 0; }
 .step:not(:last-child)::after { content: ""; flex: 1 0 28px; height: 1.5px; background: var(--line-2); margin-left: 4px;
@@ -363,13 +364,13 @@ details.reasoning p { font-size: 12.5px; color: var(--text-2); font-style: itali
 
 @media (max-width: 1100px) {
   .below { grid-template-columns: 1fr; }
-  .steps { grid-template-columns: repeat(5, auto); overflow-x: auto; gap: 8px; }
+  .steps { grid-template-columns: repeat(6, auto); overflow-x: auto; gap: 8px; }
   .step-sub { display: none; }
 }
 @media (max-width: 760px) {
   .cams { grid-template-columns: 1fr 1fr; grid-template-rows: auto; }
   .cam-main { grid-column: span 2; grid-row: auto; aspect-ratio: 4 / 3; }
-  .steps { grid-template-columns: repeat(5, 1fr); overflow: visible; padding: 14px 8px; }
+  .steps { grid-template-columns: repeat(6, 1fr); overflow: visible; padding: 14px 8px; }
   .step { flex-direction: column; gap: 6px; padding: 0; text-align: center; }
   .step:not(:last-child)::after { display: none; }
   .step-text { max-width: none; }

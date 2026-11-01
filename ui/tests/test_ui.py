@@ -202,6 +202,30 @@ def test_a_run_goes_from_upload_to_the_end_as_events(sim, colour_sam, tmp_path):
     assert runner.history()[0]["id"] == j.id
 
 
+def test_with_the_simulator_the_videos_objects_are_rebuilt_before_planning(sim, colour_sam, tmp_path, monkeypatch):
+    from watch import simscene
+
+    monkeypatch.setattr(simscene, "describe", lambda summary, named, clip, llm: simscene.clean(
+        [{"name": "paintbrush", "kind": "box", "size_cm": [20, 3, 2.5], "color": "#e68c28", "count": 1, "hand": "left"}]))
+    started = []
+
+    class Rig:  # the test's robotd is already running: note the scene it would restart on
+        def start(self, path, log=lambda s: None):
+            started.append(json.load(open(path)))
+
+    runner = jobs.Runner(str(tmp_path), backend_factory=lambda: planner(GRIP_PLAN), watch=fake_watch, record=False,
+                         sim=Rig())
+    j = runner.start(b"\0", "brush.mp4", "Grip the brush.")
+    wait(j)
+    assert j.status == "done", [e for e in j.events if e["kind"] == "error"]
+    assert [e["stage"] for e in j.events if e["kind"] == "stage"] == ["watch", "segment", "scene", "plan", "act"]
+    scene = next(e for e in j.events if e["kind"] == "scene")
+    assert [o["name"] for o in scene["objects"]] == ["paintbrush"] and scene["objects"][0]["xy_cm"][0] < 0
+    assert started[0]["objects"] == scene["objects"]
+    ready = next(e for e in j.events if e["kind"] == "scene_ready")
+    assert ready["url"].endswith("/files/scene_overhead.jpg") and os.path.getsize(os.path.join(j.dir, "scene_overhead.jpg"))
+
+
 def test_a_table_without_the_videos_objects_stops_before_planning(sim, colour_sam, tmp_path):
     watch = lambda job, log_line=None: fake_watch(job, log_line, objects=("tube", "ball"))
     runner = jobs.Runner(str(tmp_path), backend_factory=lambda: planner(GRIP_PLAN), watch=watch, record=False)

@@ -23,10 +23,12 @@
     gavel: '<svg viewBox="0 0 24 24"><path d="M14 4l6 6M11 7l6 6M8.5 9.5l6 6M3 21l7-7"/></svg>',
     alert: '<svg viewBox="0 0 24 24"><path d="M12 8v5M12 16.5v.5"/><path d="M10.3 3.9L2.4 18a2 2 0 001.7 3h15.8a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/></svg>',
     dot: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/></svg>',
+    cube: '<svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/></svg>',
   };
   const STAGES = [
     { id: "watch", name: "Watch", idle: "Muse reads the video", icon: ICON.eye },
     { id: "segment", name: "Segment", idle: "SAM 3.1 masks", icon: ICON.layers },
+    { id: "scene", name: "Scene", idle: "Rebuilt in the sim", icon: ICON.cube },
     { id: "plan", name: "Plan", idle: "The arms' task", icon: ICON.route },
     { id: "act", name: "Act", idle: "Muse drives the arms", icon: ICON.arm },
     { id: "judge", name: "Judge", idle: "Did it work?", icon: ICON.gavel },
@@ -313,6 +315,7 @@
         else if (STAGES.findIndex((x) => x.id === s.id) < STAGES.findIndex((x) => x.id === e.stage) &&
           !stepEls[s.id].classList.contains("failed")) stepState(s.id, "done");
       });
+      if (!run.scene && ["plan", "act", "judge"].includes(e.stage)) stepState("scene", null, "Real table: not rebuilt");
       if (run.card && run.card.stage !== e.stage) settle(run.card, "green");
       if (e.stage === "watch" || e.stage === "segment") {
         run.card = stageCard(e.stage, e.text);
@@ -320,7 +323,7 @@
       } else {
         scanning(false);
         if (e.stage === "act") { run.card = null; thought("Looking at the table…", live); }
-        if (e.stage === "judge") run.card = stageCard("judge", e.text);
+        if (e.stage === "judge" || e.stage === "scene") run.card = stageCard(e.stage, e.text);
       }
       $("#footState").textContent = e.text;
     } else if (k === "log") {
@@ -362,6 +365,23 @@
         if (live) { screen.classList.remove("reveal"); void screen.offsetWidth; screen.classList.add("reveal"); }
       }
       stepState("segment", "done", `${e.objects.length} things masked`);
+    } else if (k === "scene") {
+      run.scene = true;
+      const c = run.card;
+      $(".title", c).textContent = "The video's objects, in the simulator";
+      c.append(h("div", { class: "chips" }, e.objects.map((o, i) => h("span", { class: "chip", style: `animation-delay:${i * 70}ms`,
+        title: `${o.kind}, ${o.size_cm.join(" × ")} cm, at (${o.xy_cm.join(", ")})` },
+        h("span", { class: "dot", style: `background:${o.color}` }), o.name))));
+      for (const n of e.notes || []) c.append(h("div", { class: "card-body muted" }, n));
+      stepState("scene", "running", `${e.objects.length} objects · starting the sim`);
+    } else if (k === "scene_ready") {
+      const c = run.card;
+      if (c) c.append(h("div", { class: "frames one" }, h("figure", {}, h("img", { src: e.url, alt: "overhead", onclick: () => zoom(e.url) }),
+        h("figcaption", {}, "The simulator, from the overhead camera"))));
+      settle(c, "green");
+      run.card = null;
+      stepState("scene", "done", "Rebuilt in the sim");
+      scrollChat();
     } else if (k === "plan") {
       settle(run.card, "green");
       const c = card(ICON.route, "The task for the arms", "");

@@ -4,6 +4,7 @@ rendered from the calibrated overhead pose and the wrist-camera mounts.
 
     python -m harness.robotd --sim --hd [--objects balls]       robotd on it (the other --sim flags work too)
     python -m harness.mjsim [--objects balls] [--out rig.png]   a still of the rig and its three cameras
+    (--objects: a scene name, or a scene file such as watch/simscene.py makes from a video)
     python -m harness.mjsim --view                              MuJoCo's viewer on the rig (drag to look around)
 
 It stands in for sim.SimWorld behind the same interface (io, step, snapshot, visible_objects, place, the faults), so
@@ -218,6 +219,28 @@ def add_object(spec, i, name, kind, size, color, x, y, yaw):
     return b, (D, D, H)
 
 
+def scene_objects(objects):
+    """The objects of a scene: a name in SCENES, a scene file (.json, e.g. one watch/simscene.py made from a video),
+    or the list itself. A scene file: {"objects": [{"name", "kind": "ball" | "tube" | "box", "size_cm": [diameter] |
+    [outer diameter, height] | [L, W, H], "color": "#rrggbb", "xy_cm": [x, y], "yaw": deg}]}."""
+    if not isinstance(objects, str):
+        return objects
+    if objects in SCENES:
+        return SCENES[objects]
+    if not objects.endswith(".json"):
+        raise ValueError(f"no scene {objects!r}: one of {', '.join(SCENES)}, or a .json scene file")
+    import json
+
+    out = []
+    for o in json.load(open(objects))["objects"]:
+        size = [float(v) / 100 for v in o["size_cm"]]
+        c = str(o.get("color") or "#b4b4b4").lstrip("#")
+        bgr = (int(c[4:6], 16), int(c[2:4], 16), int(c[0:2], 16))
+        out.append((o["name"], o["kind"], size[0] if o["kind"] == "ball" else tuple(size), bgr,
+                    float(o["xy_cm"][0]) / 100, float(o["xy_cm"][1]) / 100, float(o.get("yaw", 0.0))))
+    return out
+
+
 def build(scene, objects="balls"):
     """The rig as a MuJoCo model: the table, both arms at their measured bases, the objects, the cameras and lights.
     Returns the model and the objects as (name, kind, size, colour, body name)."""
@@ -257,7 +280,7 @@ def build(scene, objects="balls"):
         B = scene.arms[side].base
         w.add_frame(pos=B[:3, 3], quat=quat(B[:3, :3])).attach_body(arm_spec().body("base"), side + "/", "")
     objs = []
-    for i, (name, kind, size, color, x, y, yaw) in enumerate(SCENES[objects] if isinstance(objects, str) else objects):
+    for i, (name, kind, size, color, x, y, yaw) in enumerate(scene_objects(objects)):
         body, extent = add_object(s, i, name, kind, size, color, x, y, yaw)
         body.add_freejoint()
         objs.append((name, kind, extent, tuple(color), f"obj{i}"))
@@ -587,7 +610,7 @@ def free_camera(lookat=(0.0, 0.2, 0.06), distance=0.95, azimuth=90.0, elevation=
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--objects", default="balls", help=f"scene: {', '.join(SCENES)}")
+    ap.add_argument("--objects", default="balls", help=f"scene: {', '.join(SCENES)}, or a scene .json")
     ap.add_argument("--out", default="rig.png", help="where the still goes")
     ap.add_argument("--view", action="store_true", help="open MuJoCo's viewer on the rig instead")
     a = ap.parse_args()
