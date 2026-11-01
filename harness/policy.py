@@ -110,7 +110,7 @@ class PolicyRunner:
         if core.busy():
             return dict(ok=False, errors=[f"{core.skill['name']} is still running"], fail="busy")
         if not core.ctl.armed():
-            return dict(ok=False, errors=["the arms are off: Vlad switches torque on (key a)"], fail="torque_off")
+            return dict(ok=False, errors=["the arms are off: switch torque on (key a)"], fail="torque_off")
         try:
             path = resolve(path)
             if path not in self.cache:

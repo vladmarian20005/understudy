@@ -73,7 +73,7 @@ class SimCameras:
 
 class Core:
     def __init__(self, sim_mode=True, speed=1.0, objects="brush", noise=0.0, arm=True, quiet=False,
-                 dataset="understudy_pass", datasets=DATASETS, vision=False, stream_cameras=False, sag=True,
+                 dataset="understudy", datasets=DATASETS, vision=False, stream_cameras=False, sag=True,
                  faults=None, hd=False, jitter=0.0, seed=0):
         self.scene = Scene()
         self.quiet = quiet
@@ -145,7 +145,7 @@ class Core:
 
     @property
     def interventions(self):
-        """Times Vlad took an arm over with its leader."""
+        """Times a person took an arm over with its leader."""
         return self.ctl.takeovers
 
     def close(self):
@@ -214,7 +214,7 @@ class Core:
             if self.policy.active():
                 return dict(ok=False, errors=["a policy is driving the arms: policy_stop first"], fail="busy")
             if not self.ctl.armed():
-                return dict(ok=False, errors=["the arms are off: Vlad switches torque on (key a)"], fail="torque_off")
+                return dict(ok=False, errors=["the arms are off: switch torque on (key a)"], fail="torque_off")
             self.cancel.clear()
             sid = next(self.skill_ids)
             self.skill = dict(id=sid, name=name, args=args, running=True, result=None)
@@ -409,7 +409,7 @@ def main():
     ap.add_argument("--objects", default="brush", help=f"simulator scene: {', '.join(sim.SCENES)} (--hd also balls)")
     ap.add_argument("--noise", type=float, default=0.0, help="simulated perception error, cm")
     ap.add_argument("--port", type=int, default=PORT)
-    ap.add_argument("--dataset", default="understudy_pass", help="episodes go to datasets/<name>")
+    ap.add_argument("--dataset", default="understudy", help="episodes go to datasets/<name>")
     ap.add_argument("--vision", action="store_true", help="simulator: find objects in the rendered overhead image")
     ap.add_argument("--no-camera-streams", action="store_true",
                     help="simulator: don't publish the rendered cameras on the camera ports")

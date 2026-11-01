@@ -1,12 +1,15 @@
 """The episode recorder: one LeRobot dataset episode per robot episode, and its label file next to it.
 
 episode_begin starts sampling on the controller's clock at 30 fps: the 12 joint positions as the state, the 12 goals
-as the action (what robotd commanded at that moment), and the three cameras. episode_end writes the episode, closes
-the dataset so it's complete on disk, and writes the label's robot section to datasets/<name>/sidecar/<episode>.json.
+as the action (what robotd commanded at that moment), and the three cameras. A frame in which nothing has moved since
+the last one written isn't written, so an episode's frames don't map to its clock: idle stretches are cut out. episode_end
+writes the episode, closes the dataset so it's complete on disk, and writes the label's robot section to
+datasets/<name>/sidecar/<episode>.json.
 episode_label stores the vision, judge and agents sections, and once the judge has spoken, the final training decision.
 
 Units in the dataset: joints in lerobot degrees, the gripper 0-100 (0 = closed), like lerobot's SO-101 recordings.
 """
+import bisect
 import datetime
 import json
 import os
@@ -32,6 +35,11 @@ CHECK_CM = 3.0  # robotd's own check: the object ends this close to the target, 
 # as invalid: left recording, it fills the disk with frames
 MAX_EPISODE_S = 180.0
 REVIEW_CONFIDENCE = 0.7
+# A frame isn't written unless some joint's goal or reading has moved this far (deg, or % of the gripper) since the last
+# frame written. Idle frames trap a policy that replans often: it sees only them and repeats them (an arm closes on
+# something and never lifts). It's measured from the last frame written, so slow motion and a joint settling after its goal stopped still get through. Real encoders: 0.3 is 3.4
+# ticks on an arm joint (0.088 deg each) and 4.8 on the gripper (0.062 %); held joints mostly read the same tick.
+STILL = 0.3
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATASETS = os.path.join(os.path.dirname(HERE), "datasets")
 
@@ -51,7 +59,7 @@ def frame_images(images):
 
 
 class Recorder:
-    def __init__(self, core, name="understudy_pass", root=DATASETS, vcodec="libsvtav1"):
+    def __init__(self, core, name="understudy", root=DATASETS, vcodec="libsvtav1"):
         self.core = core
         self.name = name
         self.root = os.path.join(root, name)
@@ -105,10 +113,10 @@ class Recorder:
             images = self.core.cameras.grab(list(CAM_KEYS))
             self.ds = self._open(images)
             objects = self.core.perception.detect() if self.core.perception else []
-            self.ep = dict(index=self.ds.meta.total_episodes, task=task, source=source or {"kind": "pingpong"},
+            self.ep = dict(index=self.ds.meta.total_episodes, task=task, source=source or {"kind": "unspecified"},
                            giver=giver, taker=taker, target_cm=target_cm, frames=0, camera_gaps=0, recording=True,
                            steps=[], bus0=self.core.ctl.bus_faults, takeovers0=self.core.ctl.takeovers,
-                           ev0=self.core.ev_id, start_objects=objects,
+                           ev0=self.core.ev_id, start_objects=objects, last_written=None, skipped=0, frame_t=[],
                            started=datetime.datetime.now().astimezone().isoformat(timespec="milliseconds"))
             self.queue = queue.Queue()
             self.worker = threading.Thread(target=self._work, daemon=True, name="recorder")
@@ -179,8 +187,15 @@ class Recorder:
                 threading.Thread(target=self.end, kwargs=dict(valid=False, note=note), daemon=True).start()
             return
         self.next_t += 1.0 / FPS
+        state, action = vector(q, self.core.scene.stroke_mm), vector(goal, self.core.scene.stroke_mm)
+        last = self.ep["last_written"]
+        if last is not None and max(np.abs(state - last[0]).max(), np.abs(action - last[1]).max()) < STILL:
+            self.ep["skipped"] += 1
+            return
+        self.ep["last_written"] = state, action
+        self.ep["frame_t"].append(t - self.t0)
         snap = self.core.world.snapshot() if self.core.world is not None else None
-        self.queue.put((vector(q, self.core.scene.stroke_mm), vector(goal, self.core.scene.stroke_mm), snap))
+        self.queue.put((state, action, snap))
 
     def _work(self):
         last = None
@@ -225,6 +240,8 @@ class Recorder:
                 events.append(dict(t=t, kind="release", arm=s["arm"]))
             elif s["op"] == "handover":
                 events.append(dict(t=t, kind="pass", **{"from": s["giver"], "to": s["taker"]}))
+        for e in events:  # frames don't map to the clock (idle ones aren't written): the first frame from then on
+            e["frame"] = min(bisect.bisect_left(ep["frame_t"], e["t"]), max(len(ep["frame_t"]) - 1, 0))
         objects = self.core.perception.detect() if self.core.perception else []
         obj = None
         if objects:
@@ -242,6 +259,7 @@ class Recorder:
                 "frames": ep["frames"], "source": ep["source"],
                 "robot": dict(started=ep["started"], duration_s=round(duration, 2), giver=ep["giver"],
                               taker=ep["taker"], target_cm=ep["target_cm"], valid=bool(valid), note=note,
+                              idle_frames_skipped=ep["skipped"],
                               camera_gaps=ep["camera_gaps"], bus_faults=ep.get("bus_faults", 0),
                               interventions=self.core.ctl.takeovers - ep["takeovers0"], steps=ep["steps"], events=events, object=obj, check=check,
                               log=[dict(t=e["t"], kind=e["kind"], text=e["text"])
