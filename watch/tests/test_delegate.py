@@ -79,20 +79,22 @@ def sim(tmp_path, monkeypatch):
     core.close()
 
 
-def scripted_pass():
+def scripted_grip():
+    """The brain's tools since it picks by sight (open, move, nudge, grip): go to the brush and grip it."""
+    x, y = robot.detect()["objects"][0]["center_cm"]
     return Scripted([
-        [("pick", dict(arm="left", target="brush"))],
-        [("handover", dict(giver="left", taker="right"))],
-        [("place", dict(arm="right", xy=[12, 24]))],
-        [("home", {})],
-        [("done", dict(success=True, summary="passed it and put it on the target"))],
+        [("open", dict(arm="left"))],
+        [("move", dict(left=[{"xy": [x, y - 3], "z": 8, "pitch": 60}]))],
+        [("nudge", dict(arm="left", forward=2, up=-3))],
+        [("grip", dict(arm="left"))],
+        [("done", dict(success=True, summary="gripped the brush with the left arm"))],
     ])
 
 
 def run_main(monkeypatch, tmp_path, *args):
     path = tmp_path / "score.json"
     path.write_text(json.dumps(SCORE))
-    llm = scripted_pass()
+    llm = scripted_grip()
     monkeypatch.setattr("brain.llm.backend", lambda name=None: llm)
     monkeypatch.setattr(sys, "argv", ["delegate", str(path), *args])
     delegate.main()
@@ -103,10 +105,9 @@ def test_a_score_drives_the_arms_through_the_brain(sim, monkeypatch, tmp_path, c
     llm = run_main(monkeypatch, tmp_path)
     first = llm.seen[0][0]["content"][0]["text"]
     assert first.startswith("Task: Pick up the brush with the left arm")  # the brain got the score's task
-    brush = robot.detect()["objects"][0]
-    assert abs(brush["center_cm"][0] - 12) < 3 and abs(brush["center_cm"][1] - 24) < 3 and not brush["held_by"]
     out = capsys.readouterr().out
-    assert "success: passed it" in out
+    assert out.count('"outcome": "done"') == 4  # open, move, nudge, grip all ran on the arms
+    assert "success: gripped the brush" in out
     assert len(list((tmp_path / "logs" / "delegate").glob("*.json"))) == 1
 
 
@@ -116,5 +117,5 @@ def test_recorded_the_episode_is_labelled_with_its_score_and_target(sim, monkeyp
     label = json.load(open(next((tmp_path / "datasets" / "delegate" / "sidecar").glob("*.json"))))
     assert label["source"]["kind"] == "agent" and label["source"]["score"]["video_uid"] == "abc"
     assert label["robot"]["target_cm"] == [12.0, 24.0] and label["robot"]["giver"] == "left"
-    assert label["robot"]["check"]["passed"]  # with a target, robotd's own check can run
+    assert label["robot"]["valid"]  # a run the brain thinks failed is still one for the judge to see
     assert label["agents"]["success"]

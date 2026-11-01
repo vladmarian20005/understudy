@@ -13,6 +13,22 @@ from sam_pipeline.masks import rle_to_mask
 
 COLORS = {"tool": (230, 40, 40), "other_tool": (255, 160, 0), "left": (40, 120, 255),
           "right": (40, 200, 80), "other_hand": (160, 160, 160)}
+# the other objects Muse named (object2, object3, ...), every instance in its object's colour
+EXTRA = [(225, 60, 225), (30, 215, 230), (250, 215, 40), (150, 90, 255)]
+
+
+def role_color(role: str) -> tuple:
+    if role == "object":
+        return COLORS["tool"]
+    if role in ("left", "right"):
+        return COLORS[role]
+    k = int(role[len("object"):] or 1) - 2
+    return EXTRA[k % len(EXTRA)]
+
+
+def preview_colors(roles: list[str]) -> dict[str, str]:
+    """Each object role's (and each hand's) colour in the preview, as #rrggbb."""
+    return {r: "#%02x%02x%02x" % role_color(r) for r in list(roles) + ["left", "right"]}
 
 
 def draw_box(img: np.ndarray, box, color, thick: int = 2) -> None:
@@ -29,13 +45,18 @@ def draw_box(img: np.ndarray, box, color, thick: int = 2) -> None:
 
 
 def render_preview(clip: Path, out: Path, results, a: Analysis, w: int, h: int, fps: float) -> None:
-    """Tool red (look-alikes orange), left hand/gripper blue, right green, extra hands grey.
+    """Tool red (look-alikes orange), every instance of the other objects in their own colour (EXTRA), left
+    hand/gripper blue, right green, extra hands grey.
     Bottom bar: left half lights blue while the left side holds the tool, right half green;
     white while both hold it (the pass)."""
     by_frame: dict[int, list[tuple[Det, tuple]]] = {}
     track_ids = {d.obj_id for d in a.track}
     for d in results["object"][0]:
         by_frame.setdefault(d.frame, []).append((d, COLORS["tool"] if d.obj_id in track_ids else COLORS["other_tool"]))
+    for role, result in results.items():
+        if role.startswith("object") and role != "object":
+            for d in result[0]:
+                by_frame.setdefault(d.frame, []).append((d, role_color(role)))
     for d in results["holder"][0]:
         sides = a.holders.get(d.frame, {})
         side = next((s for s, x in sides.items() if x is d), None)
