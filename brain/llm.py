@@ -102,7 +102,8 @@ class Muse:
 
 
 class Scripted:
-    """Plays back a list of replies, each text or (name, args) tool calls: for tests, no model involved."""
+    """Plays back a list of replies, each text, a dict (the JSON of ask) or (name, args) tool calls: for tests, no model
+    involved."""
 
     def __init__(self, steps):
         self.steps = list(steps)
@@ -117,6 +118,13 @@ class Scripted:
         calls = [dict(id=f"call_{len(self.seen)}_{k}", type="function",
                       function=dict(name=name, arguments=json.dumps(args))) for k, (name, args) in enumerate(step)]
         return Reply("", parse_calls(calls), dict(role="assistant", content="", tool_calls=calls), model=self.model)
+
+
+    def ask(self, system, messages, effort=None):
+        self.seen.append(list(messages))
+        step = self.steps.pop(0) if self.steps else "(script over)"
+        text = step if isinstance(step, str) else json.dumps(step)
+        return Reply(text, [], dict(role="assistant", content=text), model=self.model)
 
 
 def backend(name=None):

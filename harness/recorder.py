@@ -59,7 +59,7 @@ def frame_images(images):
 
 
 class Recorder:
-    def __init__(self, core, name="understudy_pass", root=DATASETS, vcodec="libsvtav1"):
+    def __init__(self, core, name="understudy", root=DATASETS, vcodec="libsvtav1"):
         self.core = core
         self.name = name
         self.root = os.path.join(root, name)
@@ -113,7 +113,7 @@ class Recorder:
             images = self.core.cameras.grab(list(CAM_KEYS))
             self.ds = self._open(images)
             objects = self.core.perception.detect() if self.core.perception else []
-            self.ep = dict(index=self.ds.meta.total_episodes, task=task, source=source or {"kind": "pingpong"},
+            self.ep = dict(index=self.ds.meta.total_episodes, task=task, source=source or {"kind": "unspecified"},
                            giver=giver, taker=taker, target_cm=target_cm, frames=0, camera_gaps=0, recording=True,
                            steps=[], bus0=self.core.ctl.bus_faults, takeovers0=self.core.ctl.takeovers,
                            ev0=self.core.ev_id, start_objects=objects, last_written=None, skipped=0, frame_t=[],

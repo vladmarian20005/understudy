@@ -4,7 +4,6 @@
     python -m brain --video clip.mp4                do what the person in the video does
     python -m brain "<task>" --record               the run is a recorded episode, labelled with it
     python -m brain "<task>" --plan-only --save-plan plan.json     Muse's plan, for brain.rehearse; nothing moves
-    python -m brain "<task>" --steer                the older loop: Muse steers every move itself
     LLM=<name> python -m brain "<task>"             another backend (brain/llm.py)
 
 Each run's transcript (without the images), steps, tokens, cost and time go to logs/brain/<time>.json; every image
@@ -17,7 +16,7 @@ import time
 
 from harness import robot
 
-from . import agent, llm, plan
+from . import llm, plan
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -36,10 +35,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("task", nargs="?", default="")
     ap.add_argument("--video", help="a video of a person doing the task")
-    ap.add_argument("--steer", action="store_true", help="the step-by-step loop instead of plan, act, check")
     ap.add_argument("--plan-only", action="store_true", help="look and plan, move nothing")
     ap.add_argument("--save-plan", metavar="FILE", help="write Muse's plan to FILE: brain.rehearse replays it")
-    ap.add_argument("--max-turns", type=int, default=40, help="--steer: the most model calls")
     ap.add_argument("--record", action="store_true", help="record the run as an episode (robotd's --dataset)")
     ap.add_argument("--llm", help="backend (default: LLM in .env, else muse)")
     a = ap.parse_args()
@@ -47,8 +44,6 @@ def main():
         ap.error("give a task or --video")
     if a.video and not os.path.exists(a.video):
         ap.error(f"no video at {a.video}")
-    if a.steer and not a.task:
-        ap.error("--steer needs a task in words")
     model = llm.backend(a.llm)
     # sims run side by side, each on its own port
     stamp = time.strftime("%Y%m%d-%H%M%S") + (f"-{robot.PORT}" if os.environ.get("ROBOTD_PORT") else "")
@@ -65,22 +60,18 @@ def main():
     print(f"model {model.model}" + ("" if ep is None else f", recording episode {ep}") +
           f"\ntask: {a.task or a.video}", flush=True)
     log, run_dir = (lambda s: print(s, flush=True)), os.path.join(logs, stamp)
-    if a.steer:
-        out = agent.run(a.task, model, a.max_turns, log=log, run_dir=run_dir)
-    else:
-        r = plan.Run(model, log, run_dir)
-        t0 = time.time()
-        try:
-            out = r.go(a.task, a.video, plan_only=a.plan_only)
-        except robot.RobotdDown as e:
-            out = r.end(False, f"robotd stopped answering: {e}", t0)
-        except KeyboardInterrupt:
-            robot.stop("brain interrupted")
-            out = r.end(False, "interrupted", t0)
-        if a.save_plan and r.plan:
-            json.dump(r.plan, open(a.save_plan, "w"), indent=1)
-        out = dict(out, turns=out["calls"], calls=[x for x in out.pop("record") if "step" in x],
-                   transcript=r.messages)
+    r = plan.Run(model, log, run_dir)
+    t0 = time.time()
+    try:
+        out = r.go(a.task, a.video, plan_only=a.plan_only)
+    except robot.RobotdDown as e:
+        out = r.end(False, f"robotd stopped answering: {e}", t0)
+    except KeyboardInterrupt:
+        robot.stop("brain interrupted")
+        out = r.end(False, "interrupted", t0)
+    if a.save_plan and r.plan:
+        json.dump(r.plan, open(a.save_plan, "w"), indent=1)
+    out = dict(out, turns=out["calls"], calls=[x for x in out.pop("record") if "step" in x], transcript=r.messages)
     os.makedirs(logs, exist_ok=True)
     path = os.path.join(logs, stamp + ".json")
     json.dump(dict(out, task=a.task, video=a.video, episode=ep, transcript=without_images(out["transcript"])),

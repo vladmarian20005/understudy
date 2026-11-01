@@ -32,6 +32,7 @@ SQUARE_DEG = 20.0  # closing jaws turn a free object up to this far off square t
 SAG_COMPLIANCE = (0.0, 1200.0, 1300.0, 900.0, 0.0)
 FAULTS = ("miss", "slip", "camera", "bus")
 CAMERA_OUTAGE_S = 1.5
+IDLE_MA, SQUEEZE_MA = 60.0, 280.0  # the gripper motor's current, idle and squeezing something
 
 # name, size L x W x H (m), colour (BGR), centre x, y (m), yaw (deg)
 SCENES = {
@@ -133,6 +134,10 @@ class SimArmIO:
 
     def temperatures(self):
         return [35.0] * 6
+
+    def grip_current(self):
+        """mA, as the real gripper motor reads: higher while it squeezes something."""
+        return SQUEEZE_MA if self.stalled else IDLE_MA
 
     def step(self, dt):
         if not self.torque_on:

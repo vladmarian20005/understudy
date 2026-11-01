@@ -95,7 +95,7 @@ def test_a_second_command_while_one_runs_is_busy(tmp_path):
 
 
 def test_the_episode_label_file(core, tmp_path):
-    b = call(core, "episode_begin", task="Pass the brush to the other arm", source={"kind": "pingpong"},
+    b = call(core, "episode_begin", task="Pass the brush to the other arm", source={"kind": "unspecified"},
              giver="left", taker="right", target_cm=[14, 26])
     assert b["ok"] and isinstance(b["episode"], int)
     for name, args in [("pick", dict(arm="left", target="brush")), ("handover", dict(giver="left", taker="right")),

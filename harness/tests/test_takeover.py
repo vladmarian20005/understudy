@@ -50,7 +50,7 @@ def test_moving_a_leader_takes_over_and_stops_the_skill(realtime):
     sim_wait(core, 0.1)
     assert core.start_skill("move_to", dict(arm="left", xy=[-10, 30], z=12))["ok"]
     sim_wait(core, 0.2)
-    core.leaders["left"].q[0] += 20  # Vlad swings the left leader's base
+    core.leaders["left"].q[0] += 20  # a person swings the left leader's base
     assert wait(lambda: not core.busy())
     r = core.skill["result"]
     assert r["outcome"] == "stopped" and r["fail"] == "manual", r
@@ -59,7 +59,7 @@ def test_moving_a_leader_takes_over_and_stops_the_skill(realtime):
     # the follower trails the leader
     target = core.leaders["left"].q
     assert wait(lambda: abs(core.ctl.snapshot()["q"]["left"][0] - target[0]) < 1.0)
-    # nothing else moves while Vlad has an arm
+    # nothing else moves while a person has an arm
     assert core.start_skill("home", {})["ok"]
     assert wait(lambda: not core.busy())
     assert core.skill["result"]["fail"] == "manual"

@@ -1,5 +1,5 @@
-"""The brain's own numbers for the original gripper: how deep a grasp goes, names that stay put, the wrist overlay,
-the reach facts. No robotd."""
+"""The brain's own numbers: how deep a grasp goes, names that stay put, the wrist overlay, the reach facts, the prompt. No
+robotd."""
 import numpy as np
 
 from brain import act, reach, tools, wrist
@@ -34,7 +34,8 @@ def test_one_object_keeps_one_name_whatever_word_found_it():
     assert tube["size_cm"][2] == 26  # it doesn't get shorter
 
 
-def test_the_grip_point_is_drawn_between_the_fingers_below_the_fingertips_line():
+def test_the_grip_point_is_drawn_between_the_fingers_below_the_fingertips_line(monkeypatch):
+    monkeypatch.setattr(wrist, "real", lambda: False)  # the mount's CAD, as the simulators render it
     side = "left"
     tcp = scene().arms[side].tcp
     tip, grip = wrist.wrist_px(side, tcp), wrist.wrist_px(side, tcp + np.array([0.0, 0.0, 0.03]))
@@ -93,3 +94,27 @@ def test_the_prompt_is_about_the_rig_and_never_a_task():
     assert "{lx" not in text and f"{scene().stroke_mm:.0f} mm" in text
     for word in ("tube", "tennis", "cube", "towel", "brush", "mug", "container"):
         assert word not in text, word
+
+
+def test_an_object_an_arm_covers_keeps_where_it_was_seen_whole():
+    tools.reset()
+    ball = dict(name="yellow object", center_cm=[-17.0, 39.0], size_cm=[7.0, 7.0, 7.0], z_cm=3.5)
+    tools.remember([ball])
+    tools.remember([dict(ball, center_cm=[-15.0, 37.5], size_cm=[4.0, 3.0, 7.0])])  # half under the arm
+    tools.remember([])  # all of it under the arm
+    (o,) = tools._memory["objects"]
+    assert o["center_cm"] == [-17.0, 39.0] and o["seen"] == 1
+    tools.remember([dict(ball, center_cm=[-5.0, 30.0])])  # seen whole somewhere else: it rolled
+    assert [o["center_cm"] for o in tools._memory["objects"]] == [[-5.0, 30.0], [-17.0, 39.0]]
+    for _ in range(tools.FORGET_LOOKS):
+        tools.remember([dict(ball, center_cm=[-5.0, 30.0])])
+    assert [o["center_cm"] for o in tools._memory["objects"]] == [[-5.0, 30.0]]
+
+
+def test_an_object_seen_round_once_keeps_its_height():
+    tools.reset()
+    ball = dict(name="yellow object", center_cm=[-11.0, 38.0], size_cm=[7.0, 7.0, 7.0], z_cm=3.5)
+    tools.remember([ball])
+    tools.remember([dict(ball, size_cm=[7.2, 6.6, 2.5], z_cm=1.2)])  # this frame's blob wasn't round enough
+    (o,) = tools._memory["objects"]
+    assert o["size_cm"] == [7.2, 6.6, 7.0] and o["z_cm"] == 3.5 and o["seen"] == 2

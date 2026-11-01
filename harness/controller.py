@@ -222,7 +222,7 @@ class Controller:
             if self.target:
                 return False, "a policy is driving the arms"
             if self.manual:
-                return False, f"manual: Vlad has the {next(iter(self.manual))} arm"
+                return False, f"manual: a person has the {next(iter(self.manual))} arm"
             first = trajs[0]
             for s, rows in first.rows.items():
                 off = float(np.max(np.abs(rows[0, :5] - self.goal[s][:5])))
@@ -263,7 +263,7 @@ class Controller:
             self._hold_all()
 
     def _hold_all(self):
-        """Every powered arm holds where it is, except one Vlad has with its leader (it keeps following)."""
+        """Every powered arm holds where it is, except one a person has with its leader (it keeps following)."""
         for s in self.ios:
             if self.mode[s] not in ("off", "manual"):
                 self.goal[s] = self.q[s].copy()
@@ -412,10 +412,10 @@ class Controller:
                 self.leader_ref[s] = lq.copy()
                 self.goal[s] = self.q[s].copy()
                 self.mode[s] = "hold"
-                self.on_event(f"Vlad gave the {s} arm back")
+                self.on_event(f"a person gave the {s} arm back")
             return
         if np.max(np.abs(lq[:5] - self.leader_ref[s][:5])) > TAKEOVER_DEG:
-            self._abort(f"manual: Vlad took over the {s} arm")
+            self._abort(f"manual: a person took over the {s} arm")
             self.target = {}
             for t in self.ios:
                 if self.mode[t] in ("moving", "policy"):
@@ -424,7 +424,7 @@ class Controller:
             self.mode[s] = "manual"
             self.manual[s] = dict(anchor=lq.copy(), still=0)
             self.takeovers += 1
-            self.on_event(f"Vlad took over the {s} arm", "warn")
+            self.on_event(f"a person took over the {s} arm", "warn")
 
     def _touched(self, traj):
         """The contact watch, for the arms this trajectory moves. Ends the trajectory on contact."""
