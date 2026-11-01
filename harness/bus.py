@@ -53,9 +53,9 @@ class BusArmIO:
 
     def fresh(self):
         """Drop bytes still waiting from an earlier request before reading: a reply that came in late is otherwise
-        taken as this request's (the SDK's clearPort only flushes output). 31 Oct: late position replies read as
-        temperatures of 189-252 C stopped nearly every motion as "hot", and late replies the other way round put the
-        fingertips 40 cm up."""
+        taken as this request's (the SDK's clearPort only flushes output): late position replies read as
+        temperatures of 189-252 C stop nearly every motion as "hot", and the other way round put the fingertips 40 cm up.
+        """
         ser = getattr(getattr(self.bus, "port_handler", None), "ser", None)
         if ser is not None:
             ser.reset_input_buffer()
@@ -89,7 +89,7 @@ class BusArmIO:
             return
         from lerobot.motors.feetech import OperatingMode
 
-        # a garbled status packet part way (31 Oct: 'Lock' on id 2) runs the whole sequence again, from torque off
+        # a garbled status packet part way runs the whole sequence again, from torque off
         for attempt in range(RETRIES + 1):
             try:
                 self.bus.disable_torque(num_retry=RETRIES)
@@ -121,8 +121,8 @@ class BusArmIO:
 
     def grip_torque(self, pct):
         """Cap the gripper motor's torque at pct % of its maximum (the RAM limit, live at once): the jaws stop on
-        whatever pushes back harder, so this is how hard they can squeeze. 31 Oct: at the 70% GRIPPER_TORQUE allows,
-        closing on a tennis ball crushed it 25 mm and the fingers creaked."""
+        whatever pushes back harder, so this is how hard they can squeeze: at the 70% GRIPPER_TORQUE allows, they crush
+        what they close on and the fingers creak."""
         self.bus.write("Torque_Limit", "gripper", int(round(float(np.clip(pct, 0, 100)) * 10)), normalize=False,
                        num_retry=RETRIES)
 
