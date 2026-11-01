@@ -32,7 +32,7 @@ Examples, from the repo root:
         --videos ~/ego4d/v2/full_scale --max-clips 10
 
     # 3. a robot episode (--send needs robotd running on the same dataset)
-    python -m watch.sam_ego4d episode --dataset understudy_pass --episode 37 \
+    python -m watch.sam_ego4d episode --dataset understudy --episode 37 \
         --video ep37_overhead.mp4 --object brush --send
 """
 
@@ -88,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("episode")
     p.add_argument("--video", type=Path, required=True, help="the episode's overhead video")
-    p.add_argument("--dataset", default="understudy_pass",
+    p.add_argument("--dataset", default="understudy",
                    help="the dataset the episode belongs to (datasets/<name>); results are kept per dataset")
     p.add_argument("--episode", type=int, required=True)
     p.add_argument("--object", required=True, help='SAM prompt, e.g. "brush"')

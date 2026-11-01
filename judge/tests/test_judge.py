@@ -79,8 +79,8 @@ def test_it_wont_send_verdicts_to_robotd_on_another_dataset(monkeypatch):
     from harness import robot
     from judge.__main__ import check_dataset
 
-    monkeypatch.setattr(robot, "status", lambda since=0: {"ok": True, "dataset": "understudy_pass"})
-    check_dataset("understudy_pass")
+    monkeypatch.setattr(robot, "status", lambda since=0: {"ok": True, "dataset": "understudy"})
+    check_dataset("understudy")
     with pytest.raises(SystemExit, match="restart it with --dataset sim_pass"):
         check_dataset("sim_pass")
     monkeypatch.setattr(robot, "status", lambda since=0: {"ok": True})  # a robotd that doesn't say: trusted
