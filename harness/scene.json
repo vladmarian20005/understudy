@@ -145,13 +145,14 @@
     ]
   },
   "gripper": {
+    "about": "Original SO-101 gripper (fixed jaw on the 32x32 UVC wrist-camera mount), from its CAD on 31 Oct: the tool point is level with the fixed fingertip, 35 mm in from its inner face (the middle of a 70 mm opening); the jaws close along gripper_link x; stroke = the fingertip opening with the moving jaw at 90 deg. Check on the arms.",
     "tcp": [
+      0.0271,
       0.0,
-      0.0,
-      -0.12022
+      -0.1044
     ],
-    "jaw_deg": 90.0,
-    "stroke_mm": 84.0
+    "jaw_deg": 0.0,
+    "stroke_mm": 98.0
   },
   "table": {
     "x": [

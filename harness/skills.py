@@ -338,8 +338,10 @@ class Skills:
         """Free-form motion. For each arm a keyframe or a list of them; the k-th keyframes of both arms make one phase,
         and both finish each phase together. A keyframe (table cm, degrees, mm): xy [x, y], z, rel [dx, dy, dz] (from
         where the previous keyframe left it), yaw (the jaw line, mod 180), pitch (90 straight down, 0 level; left
-        out: as steep as reaches there), width (the opening). What's left out stays as it was. Picking up and
-        letting go are grasp and release (they feel for the table); check_only plans and checks without moving."""
+        out: as steep as reaches there), width (the opening). What's left out stays as it was. roll (degrees) turns
+        only the wrist from where it is, which tilts what the gripper holds about the fingers' direction; it goes in
+        an arm's first keyframe, with nothing but width. Picking up and letting go are grasp and release (they feel
+        for the table); check_only plans and checks without moving."""
         frames = {}
         for side, kf in (("left", left), ("right", right)):
             if kf is not None:
@@ -351,10 +353,17 @@ class Skills:
         q0 = self.q()
         tips = {s: self.tool_T(s, q0[s])[:3, 3] for s in frames}
 
-        def goal(side, kf, line):
-            unknown = set(kf) - {"xy", "z", "rel", "yaw", "pitch", "width"}
+        def goal(side, kf, line, k):
+            unknown = set(kf) - {"xy", "z", "rel", "yaw", "pitch", "width", "roll"}
             if unknown:
-                raise Fail("check", f"unknown keyframe keys {sorted(unknown)}: use xy, z, rel, yaw, pitch, width")
+                raise Fail("check", f"unknown keyframe keys {sorted(unknown)}: use xy, z, rel, yaw, pitch, width, roll")
+            if "roll" in kf:
+                if set(kf) - {"roll", "width"} or k:
+                    raise Fail("check", "roll goes in an arm's first keyframe, with nothing but width")
+                q = np.array(q0[side][:5], dtype=float)
+                q[4] += float(kf["roll"])
+                tips[side] = self.scene.arms[side].tool(q)[0]
+                return Goal(joints=q, width=kf.get("width"), line=False)
             p = tips[side].copy()
             if "xy" in kf:
                 p[:2] = np.array(kf["xy"], dtype=float) / 100
@@ -371,7 +380,7 @@ class Skills:
             for s in frames:
                 tips[s] = self.tool_T(s, q0[s])[:3, 3]
             n = max(len(f) for f in frames.values())
-            return [Phase(f"move {k + 1}", {s: goal(s, f[k], line) for s, f in frames.items() if k < len(f)},
+            return [Phase(f"move {k + 1}", {s: goal(s, f[k], line, k) for s, f in frames.items() if k < len(f)},
                           speed=speed) for k in range(n)]
 
         try:

@@ -164,3 +164,10 @@ def run_policy(path, max_s, done=None, task=None):
         if done is not None and done(st):
             return policy_stop("done")
         time.sleep(0.1)
+
+
+def hold(arm, name=None, size_cm=None, center_cm=None, z_cm=None, yaw=None):
+    """Tell robotd what arm's gripper holds, as it stood on the table (size [L, W, H] cm, centre [x, y] cm, its middle's
+    height z_cm, yaw deg): from then on its pose follows the gripper (status: arms.<arm>.held) and moves keep it clear
+    of the table. No name: it holds nothing."""
+    return call("hold", arm=arm, name=name, size_cm=size_cm, center_cm=center_cm, z_cm=z_cm, yaw=yaw)

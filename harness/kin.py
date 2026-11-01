@@ -120,8 +120,11 @@ class Arm:
         they are, so for the symmetric parallel gripper both rolls are the same grasp; choosing by the jaw's direction
         keeps the demonstrations consistent (a policy averaging two rolls 180 deg apart lands on neither) and each
         wrist camera on the same side. Grasps here are across a long object lying mostly along x, so the jaw axis is
-        mostly along y and the choice is clear."""
+        mostly along y and the choice is clear. A tool point off the roll axis (the original SO-101 gripper's, between
+        its fixed and moving jaw) moves with the roll, so there the two rolls are different grasps: q stays as it is."""
         q = np.asarray(q_deg, dtype=float).copy()
+        if np.hypot(*self.tcp[:2]) > 1e-3:
+            return q
         j = self.tool(q)[1] @ self.jaw
         if j @ np.asarray(toward, dtype=float) >= 0:
             return q

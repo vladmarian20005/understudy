@@ -19,9 +19,11 @@ import time
 import cv2
 import numpy as np
 
-from harness import robot
+from harness import overlay, robot
 from harness.scene import Scene
 from harness.skills import HOLD_MIN_MM
+
+from . import sam
 
 ARM = {"type": "string", "enum": ["left", "right"]}
 XY = {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "table cm [x, y]"}
@@ -64,7 +66,9 @@ MATCH_CM = 5.0  # a detection this close to a remembered object of the same name
 FORGET_LOOKS = 10
 
 _scene = None
-_memory = dict(looks=0, objects=[])  # objects as last seen whole, each with the look it was seen at
+_memory = dict(looks=0, objects=[], counts={})  # objects as last seen whole, each with the look it was seen at
+# what SAM looks for on the overhead image, set from the task (brain/plan.py); empty: robotd's colour detector
+FIND = []
 # side -> the pitch it was last sent to. A nudge keeps that, not the measured one: an arm stretched out sags a few
 # degrees steeper than it's sent, and sending it the measured pitch ratcheted it steeper at every nudge (31 Oct:
 # 45 -> 66, where it no longer reached past a ball's middle).
@@ -114,19 +118,34 @@ def scene():
 
 def reset():
     """Forget the objects: a new run starts from what the camera sees."""
-    _memory.update(looks=0, objects=[])
+    _memory.update(looks=0, objects=[], counts={})
     _pitch.clear()
 
 
-def remember(objects):
-    """Update the remembered objects with a look's detections."""
+def new_name(kind, alone):
+    """A name for an object seen for the first time: its kind, numbered when there's more than one of that kind."""
+    k = _memory["counts"][kind] = _memory["counts"].get(kind, 0) + 1
+    return kind if k == 1 and alone else f"{kind} {k}"
+
+
+def remember(objects, held=()):
+    """Update the remembered objects with a look's detections. Each keeps its name for the whole run: a detection is
+    the remembered object of the same kind nearest it (within MATCH_CM); held: names of objects a gripper holds now
+    (they move with it, so they aren't matched to what's on the table)."""
     _memory["looks"] += 1
     n, kept = _memory["looks"], []
+    pool = [o for o in _memory["objects"] if o["name"] not in held]
+    objects = sorted(objects, key=lambda d: d["center_cm"][0])  # left to right: new ones are numbered in that order
     for d in objects:
-        old = [o for o in _memory["objects"] if o["name"] == d["name"]
+        kind = d.get("found_as") or d["name"]
+        old = [o for o in pool if o.get("kind", o["name"]) == kind
                and np.linalg.norm(np.subtract(o["center_cm"], d["center_cm"])) < MATCH_CM]
         o = min(old, key=lambda o: np.linalg.norm(np.subtract(o["center_cm"], d["center_cm"])), default=None)
+        name = o["name"] if o is not None else new_name(
+            kind, sum((e.get("found_as") or e["name"]) == kind for e in objects) == 1)
+        d = dict(d, kind=kind, name=name)
         if o is not None:
+            pool.remove(o)
             _memory["objects"].remove(o)
             if np.prod(d["size_cm"][:2]) < SHRUNK * np.prod(o["size_cm"][:2]):  # partly covered: where it was whole
                 kept.append(o)
@@ -170,12 +189,23 @@ def state_text(seen):
     for s, a in seen.get("arms", {}).items():
         arms[s] = {k: a[k] for k in ("tip_cm", "pitch", "yaw", "width_mm") if k in a}
         _, g, axes = frame(s, a["joints"])
+        arms[s]["grip_point_cm"] = [round(float(v) * 100, 1) for v in g]
+        if "grip_ma" in a:  # the gripper motor squeezes something above about 120 mA, idles at 50-80
+            arms[s]["grip_ma"] = a["grip_ma"]
+        if a.get("held"):
+            arms[s]["holding"] = {k: a["held"][k] for k in ("name", "center_cm", "top_cm", "bottom_cm", "size_cm")}
         grips[s] = (g * 100, axes)
+    held = {a["held"]["name"]: s for s, a in seen.get("arms", {}).items() if a.get("held")}
     objs = []
     for o in _memory["objects"]:
+        if o["name"] in held:
+            objs.append(dict(name=o["name"], held_by=held[o["name"]]))
+            continue
         c = np.array(o["center_cm"] + [o.get("z_cm", o["size_cm"][2] / 2)], dtype=float)
         offsets = {s: [round(float((c - g) @ ax), 1) for ax in axes] for s, (g, axes) in grips.items()}
-        objs.append(dict({k: o[k] for k in ("name", "color", "center_cm", "size_cm") if k in o},
+        if str(o.get("shape", "")).startswith("upright"):
+            o = dict(o, shape=o["shape"].replace("upright", "standing upright") + f": its top is at z {o['size_cm'][2]:.0f}")
+        objs.append(dict({k: o[k] for k in ("name", "color", "center_cm", "size_cm", "shape") if k in o},
                          seen="now" if o["seen"] == _memory["looks"] else
                          f"{_memory['looks'] - o['seen']} looks ago (covered by an arm, or gone)", from_grip=offsets))
     return json.dumps(dict(arms=arms, objects=objs))
@@ -204,9 +234,41 @@ def wrist_image(b64, cam, arm):
     return base64.b64encode(buf.tobytes()).decode()
 
 
+def label(o):
+    """An object's name, and for a standing one how tall it is: perspective makes a tall thing look like it lies."""
+    if str(o.get("shape", "")).startswith("upright"):
+        return f"{o['name']} (standing, {o['size_cm'][2]:.0f}{'+' if 'least' in o['shape'] else ''} cm tall)"
+    return o["name"]
+
+
 def look(cams=("overhead",)):
-    seen = robot.look(list(cams))
-    remember(seen.get("objects", []))
+    """Fresh images and positions. With FIND set, the objects are SAM's (by name, any colour) and the overhead image
+    gets the grid, the grippers and their names drawn on; otherwise robotd's colour detector and overlay."""
+    if not FIND:
+        seen = robot.look(list(cams))
+        remember(seen.get("objects", []))
+    else:
+        seen = robot.look(list(cams), annotate=False)
+        arms = seen.get("arms", {})
+        img = cv2.imdecode(np.frombuffer(base64.b64decode(seen["images"]["overhead"]), np.uint8), cv2.IMREAD_COLOR)
+        held = {s: a["held"] for s, a in arms.items() if a.get("held")}
+        held_px = robot.to_pixels([h["center_cm"] for h in held.values()]) if held else []
+        q = {s: list(a["joints"]) + [a["width_mm"]] for s, a in arms.items()}
+        try:
+            objs = sam.objects(scene(), img, FIND, q, held_px)
+        except Exception as e:  # SAM down: what the colour detector sees, rather than nothing
+            print(f"SAM failed ({e}): colour detector instead", flush=True)
+            objs = seen.get("objects", [])
+        remember(objs, {h["name"] for h in held.values()})
+        for s, h in held.items():  # what a gripper holds is where the gripper has it
+            for o in _memory["objects"]:
+                if o["name"] == h["name"]:
+                    o.update(center_cm=h["center_cm"][:2], z_cm=h["center_cm"][2], seen=_memory["looks"])
+        fresh = [dict(id="", name=label(o), px=o["px"]) for o in _memory["objects"]
+                 if o["seen"] == _memory["looks"] and o["name"] not in {h["name"] for h in held.values()}]
+        ok, buf = cv2.imencode(".jpg", overlay.draw(img, scene(), fresh, arms), [cv2.IMWRITE_JPEG_QUALITY, 85])
+        seen["images"]["overhead"] = base64.b64encode(buf.tobytes()).decode()
+        seen["objects"] = objs
     sides = {c: s for s, c in WRISTS.items()}
     for cam, b64 in list(seen.get("images", {}).items()):
         if cam != "overhead":
