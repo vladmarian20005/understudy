@@ -4,7 +4,7 @@ Messages and tools are in the OpenAI chat format (images as image_url data URLs)
 picks the backend:
     muse      Muse Spark through Meta's Model API (OpenAI SDK). MODEL_API_KEY, MUSE_MODEL (default muse-spark-1.3),
               MODEL_API_BASE (default https://api.meta.ai/v1)
-    <name>    brain/llm_<name>.py, a local backend that stays out of git (its module has a chat function)
+    <name>    brain/llm_<name>.py, a local backend that stays out of git (its module has a Backend class)
 Tests pass a Scripted backend in directly. Every number we report comes from Muse Spark.
 """
 import importlib
