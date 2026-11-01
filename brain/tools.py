@@ -192,8 +192,8 @@ def state_text(seen):
         arms[s]["grip_point_cm"] = [round(float(v) * 100, 1) for v in g]
         if "grip_ma" in a:  # the gripper motor squeezes something above about 120 mA, idles at 50-80
             arms[s]["grip_ma"] = a["grip_ma"]
-        if a.get("held"):
-            arms[s]["holding"] = {k: a["held"][k] for k in ("name", "center_cm", "top_cm", "bottom_cm", "size_cm")}
+        if a.get("held"):  # the last grasp's record (robotd's), not a sensor: it may have slipped out since
+            arms[s]["last_grasped"] = {k: a["held"][k] for k in ("name", "center_cm", "top_cm", "bottom_cm", "size_cm")}
         grips[s] = (g * 100, axes)
     held = {a["held"]["name"]: s for s, a in seen.get("arms", {}).items() if a.get("held")}
     objs = []
@@ -266,7 +266,10 @@ def look(cams=("overhead",)):
                     o.update(center_cm=h["center_cm"][:2], z_cm=h["center_cm"][2], seen=_memory["looks"])
         fresh = [dict(id="", name=label(o), px=o["px"]) for o in _memory["objects"]
                  if o["seen"] == _memory["looks"] and o["name"] not in {h["name"] for h in held.values()}]
-        ok, buf = cv2.imencode(".jpg", overlay.draw(img, scene(), fresh, arms), [cv2.IMWRITE_JPEG_QUALITY, 85])
+        # the grippers drawn with their opening, not "holding": robotd's holding is the last grasp's record, and drawn
+        # on the image it read as seen (1 Nov: Muse took "holding" over empty jaws as a ball still in them)
+        shown = {s: dict(a, holding=False) for s, a in arms.items()}
+        ok, buf = cv2.imencode(".jpg", overlay.draw(img, scene(), fresh, shown), [cv2.IMWRITE_JPEG_QUALITY, 85])
         seen["images"]["overhead"] = base64.b64encode(buf.tobytes()).decode()
         seen["objects"] = objs
     sides = {c: s for s, c in WRISTS.items()}

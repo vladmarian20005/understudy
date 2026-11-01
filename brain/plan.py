@@ -34,9 +34,10 @@ in between unless a step asks for a check or fails. Then you see fresh images an
 
 Objects come from a segmentation model on the overhead image, by name: center_cm [x, y], size_cm [L, W, H], and shape:
 "round" (as tall as wide), "upright" (a standing thing; its height comes from the image and is good to a few cm;
-"at least this tall" when its top is cut off by the image's edge) or "flat" (its height is a guess). An object an arm
-holds is listed under that arm: its center, top and bottom now, top being the end that was up when it was picked up.
-It moves with the gripper. Each arm also has its grip_point_cm (the spot between the finger pads, 2 cm back from the
+"at least this tall" when its top is cut off by the image's edge) or "flat" (its height is a guess). What an arm last
+grasped is listed under it as last_grasped: where it is if it's still in the jaws (center, top and bottom, top being
+the end that was up when it was picked up). That is the grasp's record, not a sensor: the wrist image shows whether
+it is still there. Each arm also has its grip_point_cm (the spot between the finger pads, 2 cm back from the
 fingertips, where the jaws pinch and what it holds sits) and grip_ma (the gripper motor's current: above about 120 mA
 it is squeezing something, 50-80 idle).
 
@@ -91,7 +92,8 @@ PLAN_ASK = """Make the plan. Reply with JSON:
 
 CHECK_ASK = """Judge only from the images and the object list above, not from the plan: the plan says what should
 have happened, the motors only say the arms moved, and neither sees where things ended up. Look at every image
-first. Something you can't see clearly isn't done: a thing let go over a container is in it only if no image shows
+first, and weigh the facts with them: the counts say how many of each thing are still on the table, and a count that
+didn't go down after letting go over a container means it missed. Something you can't see clearly isn't done: a thing let go over a container is in it only if no image shows
 it anywhere else (on the table, beside the container, still in the jaws). When it isn't, go back: fix it before
 the rest of the plan.
 Reply with JSON:
@@ -157,6 +159,7 @@ class Run:
         self.messages, self.calls, self.turn = [], 0, 0
         self.stats = dict(tokens_in=0, tokens_out=0, cost=0.0, llm_seconds=0.0, steps=0, calls=0)
         self.record = []
+        self.start_counts = None
 
     def save(self, **rec):
         rec = dict(t=round(time.time(), 2), **rec)
@@ -202,8 +205,39 @@ class Run:
             self.save_images(seen, tag)
         return seen
 
+    def counts(self):
+        """How many of each kind of thing the overhead camera sees on the table now (not held)."""
+        out = {}
+        for o in tools._memory["objects"]:
+            if o["seen"] == tools._memory["looks"]:
+                k = o.get("kind", o["name"])
+                out[k] = out.get(k, 0) + 1
+        return out
+
+    def facts(self, seen):
+        """The arms and the table as numbers, in words, for every check: the check weighs them with the images."""
+        lines = []
+        for side, a in sorted((seen.get("arms") or {}).items()):
+            g = [round(float(v) * 100, 1) for v in tools.frame(side, a["joints"])[1]]
+            held = a.get("held")
+            lines.append(
+                f"- {side} arm: grip point at {g} cm, pitch {a.get('pitch', 0):.0f}, jaws open {a.get('width_mm', 0):.0f} mm, "
+                f"gripper motor {a.get('grip_ma', 0):.0f} mA. "
+                + (f"Its last grasp took the {held['name']} ({held['size_cm'][0]:.1f} cm across); whether it is still "
+                   "there the wrist image shows, not these numbers: after a grasp the jaws are held at a fixed "
+                   "opening, so the opening and the current look the same with it or without it."
+                   if held else "It holds nothing it grasped (jaws open or empty)."))
+        now, start = self.counts(), self.start_counts or {}
+        for k in sorted(set(now) | set(start)):
+            lines.append(f"- {k}: {now.get(k, 0)} on the table seen by the overhead camera now, {start.get(k, 0)} at "
+                         "the start. One put into a container or held is no longer on the table; one that slipped "
+                         "or fell is.")
+        lines.append("- To be sure an arm still holds something, a step can give it a grip: the jaws close on what's "
+                     "there and say so, or shut on nothing and the step fails.")
+        return "Facts (the arms' state from their motors, the table from segmentation):\n" + "\n".join(lines)
+
     def seen_parts(self, text, seen):
-        parts = [{"type": "text", "text": text + "\n\nNow: " + tools.state_text(seen)}]
+        parts = [{"type": "text", "text": text + "\n\n" + self.facts(seen) + "\n\nNow: " + tools.state_text(seen)}]
         for cam, b64 in seen.get("images", {}).items():
             parts += [{"type": "text", "text": f"{cam} camera:"}, image_part(b64)]
         return parts
@@ -235,6 +269,7 @@ class Run:
         tools.FIND = list(dict.fromkeys([n.lower() for n in names + video_objects] + SHAPES))
         tools.reset()  # from here on the objects are SAM's: forget the colour detector's
         seen = self.look(tag="00")
+        self.start_counts = self.counts()
         self.log(f"SAM looks for {tools.FIND}; found " + ", ".join(
             f"{o['name']} at {o['center_cm']}" for o in tools._memory["objects"]))
         intro = f"Task: {task}"
