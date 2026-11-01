@@ -25,9 +25,9 @@
       "slot": 2400,
       "slots": [128, 256, 800, 1600, 2400, 3072],
       "rotate": 0,
-      "controls": {"Auto Exposure Mode": 1, "Absolute Exposure Time": 250, "Gain": 5, "Gamma": 100, "Contrast": 32,
+      "controls": {"Auto Exposure Mode": 1, "Absolute Exposure Time": 170, "Gain": 5, "Gamma": 100, "Contrast": 32,
                    "Brightness": 0, "Backlight Compensation": 1},
-      "note": "Only does 30 fps at 1024x768 or 1920x1080. Its auto exposure stays near black indoors, so it runs manual: 250 = 25 ms, the longest that keeps 30 fps (300+ wraps back to short)."
+      "note": "Only does 30 fps at 1024x768 or 1920x1080. Its auto exposure stays near black indoors, so it runs manual, in 0.1 ms: 250 (25 ms) is the longest that keeps 30 fps, 300+ wraps back to short."
     },
     "right_wrist": {
       "usb": "Autodarts DIY Cam",
