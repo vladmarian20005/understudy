@@ -133,6 +133,23 @@ def reach(side, g, head, p, yaw, speed="slow"):
     return arms
 
 
+def jaw_tilt(side, joints):
+    """How far (deg) the jaw line leans from flat, for an arm at these joints."""
+    a = tools.scene().arms[side]
+    _, R = a.tool(joints)
+    j = R @ a.jaw
+    return float(np.degrees(np.arcsin(np.clip(j[2], -1.0, 1.0))))
+
+
+def flat_jaw_roll(side, arm, tol=4.0):
+    """The wrist roll (deg) that lays the jaw line flat from where the arm is, or 0 when it nearly is."""
+    q = np.array(arm["joints"], dtype=float)
+    if abs(jaw_tilt(side, q)) < tol:
+        return 0.0
+    best = min(np.arange(-90.0, 90.5, 1.0), key=lambda d: abs(jaw_tilt(side, q + [0, 0, 0, 0, d])))
+    return float(best)
+
+
 def moving_jaw_dir(side, arm):
     """The table direction (unit, 2D) from the fixed finger toward the moving one, for an arm as it stands."""
     a = tools.scene().arms[side]
@@ -200,6 +217,16 @@ def grasp(side, arms, object, height=None, pitch=None, lift=5.0, offset=None):
     # the arm's own pose says once it is at the approach's start, above or in front of the thing.
     k = len(frames) - (2 if p >= STEEP else 3)  # the approach's start
     arms = yield Stage(frames[:k + 1])
+    if p < STEEP:
+        # Coming in from the side, the jaw line must lie flat to close round a standing thing. A keyframe's yaw only
+        # fixes the jaw line's direction seen from above, which doesn't fix the wrist's roll when the gripper points
+        # level: 2 Nov, at 3 cm left of the middle it came in with the jaw line 50 deg off flat, the fixed finger
+        # high, and pushed the can over. So the wrist rolls it flat first.
+        d = flat_jaw_roll(side, arms[side])
+        if d:
+            arms = yield Stage([{"roll": d}], "slow")
+            # from here on no yaw: a keyframe's yaw makes the planner choose the roll again, and it rolled it back
+            yaw = None
     shift = max(0.0, wide * 10 / 2 + JAW_CLEAR_MM - FIXED_FACE_MM) / 10  # cm
     off = np.zeros(3)  # from the grip point to the thing's middle, once gripped
     if shift > 0:
