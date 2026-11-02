@@ -13,6 +13,7 @@ import os
 import queue
 import shutil
 import threading
+import time
 
 import cv2
 import numpy as np
@@ -50,6 +51,14 @@ def frame_images(images):
     return out
 
 
+def complete(root):
+    """A LeRobot v3 dataset with at least one whole episode: what resume() needs locally."""
+    meta = os.path.join(root, "meta")
+    episodes = os.path.join(meta, "episodes")
+    return (os.path.exists(os.path.join(meta, "info.json")) and os.path.exists(os.path.join(meta, "tasks.parquet"))
+            and os.path.isdir(episodes) and any(f.endswith(".parquet") for _, _, fs in os.walk(episodes) for f in fs))
+
+
 class Recorder:
     def __init__(self, core, name="understudy_pass", root=DATASETS, vcodec="libsvtav1"):
         self.core = core
@@ -85,6 +94,14 @@ class Recorder:
         from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
         kw = dict(image_writer_threads=4, vcodec=self.vcodec)
+        if os.path.exists(self.root) and not complete(self.root):
+            # Begun but never given a first whole episode (robotd stopped mid-episode): lerobot's resume() finds
+            # info.json, misses tasks.parquet or meta/episodes and goes to the Hub for them as "local/<name>" (2 Nov:
+            # a 401, and every run after it unrecorded and unjudged). Kept aside, not deleted.
+            aside = f"{self.root}.incomplete-{time.strftime('%Y%m%d-%H%M%S')}"
+            os.rename(self.root, aside)
+            self.core.event(f"dataset {self.name} had no whole episode: moved to {os.path.basename(aside)}, "
+                            "starting it afresh", "warn")
         if os.path.exists(os.path.join(self.root, "meta", "info.json")):
             ds = LeRobotDataset.resume(f"local/{self.name}", root=self.root, **kw)
             want = self._features(images)
