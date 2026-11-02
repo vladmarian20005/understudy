@@ -255,6 +255,8 @@ def action_text(a):
 
 
 def step_text(step):
+    if step.get("reset"):
+        return f"Reset the {step['reset']} in the simulator (out of reach)"
     arms = [f"{side.title()} {action_text(step[side])}" for side in ("left", "right") if step.get(side)]
     return " · ".join(arms) or "nothing"
 

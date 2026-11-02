@@ -94,3 +94,41 @@ def test_robotd_picks_a_ball_by_friction_and_sets_it_down():
         assert np.linalg.norm(ball.pos[:2] * 100 - [-15, 20]) < 5  # the opening jaw can flick it: it rolls a bit
     finally:
         core.close()
+
+
+# ---- keeping things where the arms reach (2 Nov) ---------------------------------------------------------------------
+def test_a_rolling_ball_stops_at_the_fence_and_the_arms_pass_through_it():
+    w = mjsim.MjWorld(Scene(), "balls")
+    try:
+        o = next(o for o in w.objects if o.name == "ball 3")
+        w.data.qvel[o.dadr:o.dadr + 3] = [0.0, 2.0, 0.0]  # rolling away from the arms at 2 m/s
+        for _ in range(100):
+            w.step(0.02)
+        assert o.pos[1] < mjsim.FENCE[3]  # stopped inside, not rolled off past the arms' reach
+        fence = [g for g in range(w.model.ngeom) if w.model.geom(g).name.startswith("fence")]
+        arm = [g for g in range(w.model.ngeom) if w.model.geom_contype[g] == mjsim.ARM_TYPE]
+        assert len(fence) == 4 and arm
+        for f in fence:  # nothing of the arms collides with it
+            for g in arm:
+                assert not (w.model.geom_contype[f] & w.model.geom_conaffinity[g]
+                            or w.model.geom_contype[g] & w.model.geom_conaffinity[f])
+    finally:
+        w.close()
+
+
+def test_reset_puts_back_only_what_no_arm_can_reach():
+    core = Core(sim_mode=True, speed=0, quiet=True, dataset=None, hd=True, objects="balls")
+    try:
+        r = core.handle(dict(cmd="sim_reset", name="tube"))  # where the scene put it: in reach
+        assert not r["ok"] and "within the" in r["errors"][0] and "pick it up with the arms" in r["errors"][0]
+        core.world.place("tube", (0.40, 0.44))  # knocked past both arms' reach
+        r = core.handle(dict(cmd="sim_reset", name="tube"))
+        assert r["ok"] and r["object"] == "tube" and r["now_cm"] == [4.0, 30.0]
+        tube = next(o for o in core.world.objects if o.name == "tube")
+        assert np.linalg.norm(tube.pos[:2] - [0.04, 0.30]) < 0.01
+        core.world.place("ball 1", (0.40, 0.44))  # the brain's name for it may differ: kind and where it was seen
+        r = core.handle(dict(cmd="sim_reset", name="ball 4", kind="ball", near_cm=[39, 43]))
+        assert r["ok"] and r["object"] == "ball 1"
+        assert not core.handle(dict(cmd="sim_reset", name="cup"))["ok"]
+    finally:
+        core.close()

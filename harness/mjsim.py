@@ -46,6 +46,10 @@ GRIP_DEFAULT_PCT = 70.0  # bus.py's Max_Torque_Limit (700): the cap until grip_f
 IDLE_MA, FULL_MA = 60.0, 730.0  # gripper current idle, plus this at full torque (a 30 % cap squeezing: ~280 mA, bench)
 CLOSED_DEG, OPEN_DEG = -15.0, 90.0  # the moving jaw's travel: past 90 deg its tip swings back up
 ARM_TYPE, WORLD_TYPE = 2, 1  # contype bits: arms touch the table and objects, not each other
+FENCE_TYPE = 4  # the fence touches objects only: the arms pass through it
+# An invisible fence round where the arms reach (table m: x0, x1, y0, y1; height, thickness). 2 Nov: a knocked tube
+# or a dropped ball kept rolling out of reach and the run was over; inside this every point is 12-45 cm from a base.
+FENCE = (-0.32, 0.32, 0.08, 0.42, 0.07, 0.01)
 
 PLA = (0.86, 0.30, 0.20, 1.0)  # the arms are printed red-orange
 SERVO = (0.07, 0.07, 0.08, 1.0)
@@ -176,7 +180,7 @@ def arm_spec():
 
 def add_object(spec, i, name, kind, size, color, x, y, yaw):
     rgba = [color[2] / 255, color[1] / 255, color[0] / 255, 1.0]
-    common = dict(contype=WORLD_TYPE, conaffinity=WORLD_TYPE | ARM_TYPE, solref=[0.006, 1], group=0)
+    common = dict(contype=WORLD_TYPE, conaffinity=WORLD_TYPE | ARM_TYPE | FENCE_TYPE, solref=[0.006, 1], group=0)
     if kind == "ball":
         r = size / 2
         b = spec.worldbody.add_body(name=f"obj{i}", pos=[x, y, r], quat=yaw_quat(yaw))
@@ -282,6 +286,13 @@ def build(scene, objects="balls"):
     for side in SIDES:
         B = scene.arms[side].base
         w.add_frame(pos=B[:3, 3], quat=quat(B[:3, :3])).attach_body(arm_spec().body("base"), side + "/", "")
+    x0, x1, y0, y1, fh, ft = FENCE
+    for k, (pos, half) in enumerate((([(x0 + x1) / 2, y0 - ft / 2, fh / 2], [(x1 - x0) / 2 + ft, ft / 2, fh / 2]),
+                                     ([(x0 + x1) / 2, y1 + ft / 2, fh / 2], [(x1 - x0) / 2 + ft, ft / 2, fh / 2]),
+                                     ([x0 - ft / 2, (y0 + y1) / 2, fh / 2], [ft / 2, (y1 - y0) / 2 + ft, fh / 2]),
+                                     ([x1 + ft / 2, (y0 + y1) / 2, fh / 2], [ft / 2, (y1 - y0) / 2 + ft, fh / 2]))):
+        w.add_geom(name=f"fence{k}", type=mujoco.mjtGeom.mjGEOM_BOX, size=half, pos=pos, group=3, rgba=[0, 0, 0, 0],
+                   contype=FENCE_TYPE, conaffinity=FENCE_TYPE)
     objs = []
     for i, (name, kind, size, color, x, y, yaw) in enumerate(scene_objects(objects)):
         body, extent = add_object(s, i, name, kind, size, color, x, y, yaw)
@@ -399,6 +410,8 @@ class MjWorld:
                         self.jaws[g] = (s, kind)
         self.friction = m.geom_friction[:, 0].copy()
         self.objects = [MjObject(self, i, *o) for i, o in enumerate(objs)]
+        # where each object started: reset() puts one back there
+        self.start = {o[0]: (o[4], o[5], o[6]) for o in scene_objects(objects)}
         self.geom_obj = {g: o.index for o in self.objects for g in o.geoms}
         self.grip_deg, self.grip_mm = self._grip_table()
         self.io = {}
@@ -556,6 +569,11 @@ class MjWorld:
             self.data.qpos[o.qadr:o.qadr + 7] = [xy[0], xy[1], o.rest_z() + 0.001, *yaw_quat(yaw)]
             self.data.qvel[o.dadr:o.dadr + 6] = 0
             mujoco.mj_forward(self.model, self.data)
+
+    def reset(self, name):
+        """Put an object back where the scene started it, standing."""
+        x, y, yaw = self.start[name]
+        self.place(name, (x, y), yaw)
 
     def holder(self, o):
         return next(iter(o.held), None)

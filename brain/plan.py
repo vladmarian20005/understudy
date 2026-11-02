@@ -62,6 +62,10 @@ Actions, one per arm per step; a step's left and right actions run at the same t
 - {"do": "open"}: let go. {"do": "grip"}: close where it is (grasp already grips).
 - {"do": "nudge", "forward": cm, "right": cm, "up": cm}: a small step in the gripper's own directions.
 - {"do": "park"}: raised, level, out to the side, so the camera sees the table.
+- A whole step {"reset": NAME} (no left or right): the simulator puts that thing back where it started. Only for a
+  thing no arm can reach any more: knocked off the table, or past both arms' reach (farther than about 45 cm from
+  both bases). It is checked against where the thing really is and refused when an arm can still reach it; then
+  handle it with the arms. Never use it to undo a miss, a slip or a thing tipped over within reach.
 
 Rules:
 - Every step is checked before anything moves: reach, the table, a held object's clearance above it, and a 1.5 cm
@@ -345,6 +349,9 @@ class Run:
 
 
 def describe(step):
+    if step.get("reset"):
+        return f"reset {step['reset']}" + (f"  [check: {step['check']}]" if step.get("check") else "")
+
     def one(a):
         a = dict(a)
         return a.pop("do", "?") + ("" if not a else " " + json.dumps(a, separators=(",", ":")))

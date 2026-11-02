@@ -338,10 +338,26 @@ def start(side, spec, arms):
         raise Failed(f"bad arguments for {name}: {e}")
 
 
+def reset(name):
+    """The simulator puts a thing no arm can reach any more back where it started. robotd checks where it really is
+    and refuses when an arm can still reach it, so this can't stand in for handling it."""
+    try:
+        o = find(name)
+        kind, near = o.get("kind", o["name"]), o["center_cm"]
+    except Failed:
+        kind, near = name, None
+    r = robot.call("sim_reset", name=name, kind=kind, near_cm=near)
+    if not r.get("ok"):
+        return dict(failed="; ".join(r.get("errors", [])))
+    return dict(reset=f"{r['object']} was at {r['was']}; it is back at {r['now_cm']} cm, where it started")
+
+
 def run(step):
     """Run one plan step: {"left": action, "right": action}, both at once. Returns ({side: result}, stopped), where a
     result has "failed" when that arm's action couldn't finish, and stopped is robotd's reason when a person or a
     safety reflex stopped the arms (the run should end)."""
+    if step.get("reset"):
+        return {"reset": reset(step["reset"])}, None
     arms = robot.status()["arms"]
     gens, results, stage = {}, {}, {}
     for side in ("left", "right"):

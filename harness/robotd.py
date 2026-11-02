@@ -71,6 +71,9 @@ class SimCameras:
         return {n: dict(ok=True, fps=30.0, age_s=0.0) for n in CAMERAS}
 
 
+RESET_REACH_CM = (12.0, 45.0)  # an arm reaches a thing this far from its base, on the table
+
+
 class Core:
     def __init__(self, sim_mode=True, speed=1.0, objects="brush", noise=0.0, arm=True, quiet=False,
                  dataset="understudy_pass", datasets=DATASETS, vision=False, stream_cameras=False, sag=True,
@@ -176,6 +179,36 @@ class Core:
             return [e for e in self.events if e["id"] > since]
 
     # ---- state ----------------------------------------------------------------------------------------------------
+    def sim_reset(self, req):
+        """Put an object back where the scene started it, but only when no arm can reach it where it really is (off
+        the table, or farther than RESET_REACH_CM from both bases): the brain may not use it to undo a mistake an arm
+        could fix. name: the object; kind and near_cm (its last seen centre) pick among same-kind ones when the
+        brain's name for it isn't the simulator's."""
+        if not self.sim or not hasattr(self.world, "reset"):
+            return dict(ok=False, errors=["reset is only in the HD simulator: on the real table a person puts it back"])
+        objs = [o for o in self.world.objects if not self.world.holder(o)]
+        name, kind = str(req.get("name") or ""), str(req.get("kind") or "")
+        same = [o for o in objs if o.name == name] or [o for o in objs if kind and
+                                                       (o.name == kind or o.name.rstrip("0123456789 ") == kind)]
+        if not same:
+            return dict(ok=False, errors=[f"no free object {name!r} in the simulator"])
+        near = req.get("near_cm")
+        o = min(same, key=lambda o: np.linalg.norm(o.pos[:2] * 100 - np.array(near[:2], dtype=float))) if near \
+            else same[0]
+        xy = o.pos[:2]
+        dist = {s: float(np.linalg.norm(xy - self.scene.base_xy(s)) * 100) for s in SIDES}
+        on_table = self.scene.on_table(xy) and o.pos[2] > -0.01
+        reach = [s for s, d in dist.items() if RESET_REACH_CM[0] <= d <= RESET_REACH_CM[1]]
+        where = f"({xy[0] * 100:.0f}, {xy[1] * 100:.0f}) cm, " + ", ".join(f"{d:.0f} cm from the {s} base"
+                                                                            for s, d in dist.items())
+        if on_table and reach:
+            return dict(ok=False, errors=[f"not reset: {o.name} is at {where}, within the {' and '.join(reach)} arm's "
+                                          "reach: pick it up with the arms"], where=where)
+        self.world.reset(o.name)
+        x, y, _ = self.world.start[o.name]
+        self.event(f"reset {o.name}: it was at {where}" + ("" if on_table else ", off the table"), "warn")
+        return dict(ok=True, object=o.name, was=where, now_cm=[round(x * 100, 1), round(y * 100, 1)])
+
     def arms_state(self):
         snap = self.ctl.snapshot()
         out = {}
@@ -269,6 +302,8 @@ class Core:
                 return dict(ok=False, errors=["arm is left or right"])
             self.ctl.grip_force(req["arm"], float(req.get("pct", 30)))
             return dict(ok=True)
+        if cmd == "sim_reset":  # the simulator only: a thing no arm can reach any more, back where it started
+            return self.sim_reset(req)
         if cmd == "hold":  # what a gripper holds, as it stood on the table (none: nothing): it moves with the gripper
             side = req.get("arm")
             if side not in SIDES:
