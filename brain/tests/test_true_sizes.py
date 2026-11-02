@@ -1,4 +1,4 @@
-"""In the simulator the brain works with the sizes the simulator built things with, not one camera's estimates."""
+"""In the simulator the brain works with where things really are and how big, not one camera's estimates."""
 from brain import tools
 from harness import robot
 
@@ -13,5 +13,7 @@ def test_the_simulators_sizes_replace_the_estimates_only_in_the_simulator(monkey
         tools.reset()
         monkeypatch.setattr(robot, "status", lambda sim=sim: dict(sim=sim))
         can, ball = tools.true_sizes([dict(o) for o in SAM])
-        assert can["size_cm"] == can_size and can["center_cm"] == [4.5, 31.0]  # where SAM saw it stays
+        assert can["size_cm"] == can_size
+        assert can["center_cm"] == ([4.0, 30.0] if sim else [4.5, 31.0])  # in the simulator, where it really is
+        assert can.get("sim_name") == ("tennis ball can" if sim else None)
         assert ball["size_cm"] == [7.0, 7.0, 7.0]  # nothing in the simulator near it: the estimate stays

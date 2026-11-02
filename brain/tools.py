@@ -246,20 +246,23 @@ def label(o):
 
 
 def true_sizes(objs):
-    """In the simulator, each object SAM found gets the size the simulator built it with (the nearest one there, within
-    TRUE_MATCH_CM): one camera's estimate of a width or a height is off by a centimetre or more (2 Nov: a 78 mm can
-    seen as 78 to 91 mm from one run to the next, and the plan to hold it or not flipped with it). On the real
-    arms, the estimates stay."""
+    """In the simulator, each object SAM found is the simulator's own, the nearest one there within TRUE_MATCH_CM:
+    its exact centre, size and height, and its name there (sim_name, for a reset). One camera's estimate is off by
+    a centimetre or more (2 Nov: a 78 mm can seen as 78 to 91 mm, its middle 1-3 cm off, so the 98 mm jaws closed
+    beside it or on its edge and it slipped). Names stay the brain's. On the real arms, the estimates stay."""
     if "on" not in _sim:
         _sim["on"] = bool(robot.status().get("sim"))
     if not _sim["on"] or not objs:
         return objs
-    truth = robot.detect().get("objects", [])
+    truth = [t for t in robot.detect().get("objects", []) if not t.get("held_by")]
     out = []
     for o in objs:
         near = min(truth, key=lambda t: np.linalg.norm(np.subtract(t["center_cm"], o["center_cm"])), default=None)
         if near is not None and np.linalg.norm(np.subtract(near["center_cm"], o["center_cm"])) < TRUE_MATCH_CM:
-            o = dict(o, size_cm=list(near["size_cm"]), z_cm=near.get("z_cm", o.get("z_cm")))
+            o = dict(o, center_cm=list(near["center_cm"]), size_cm=list(near["size_cm"]),
+                     z_cm=near.get("z_cm", o.get("z_cm")), sim_name=near["name"])
+            if near.get("yaw") is not None:
+                o["yaw"] = near["yaw"]
         out.append(o)
     return out
 

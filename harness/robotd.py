@@ -190,6 +190,8 @@ class Core:
         name, kind = str(req.get("name") or ""), str(req.get("kind") or "")
         same = [o for o in objs if o.name == name] or [o for o in objs if kind and
                                                        (o.name == kind or o.name.rstrip("0123456789 ") == kind)]
+        if not same and req.get("near_cm"):  # neither name known here: the free thing nearest where it was seen
+            same = sorted(objs, key=lambda o: np.linalg.norm(o.pos[:2] * 100 - np.array(req["near_cm"][:2], float)))[:1]
         if not same:
             return dict(ok=False, errors=[f"no free object {name!r} in the simulator"])
         near = req.get("near_cm")

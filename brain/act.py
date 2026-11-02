@@ -396,10 +396,12 @@ def reset(name):
     and refuses when an arm can still reach it, so this can't stand in for handling it."""
     try:
         o = find(name)
-        kind, near = o.get("kind", o["name"]), o["center_cm"]
+        # the simulator's name for it (tools.true_sizes): the brain's ("cylinder") needn't be the simulator's
+        # ("tennis ball can"), and the reset found nothing by it (2 Nov)
+        sim_name, kind, near = o.get("sim_name") or name, o.get("kind", o["name"]), o["center_cm"]
     except Failed:
-        kind, near = name, None
-    r = robot.call("sim_reset", name=name, kind=kind, near_cm=near)
+        sim_name, kind, near = name, name, None
+    r = robot.call("sim_reset", name=sim_name, kind=kind, near_cm=near)
     if not r.get("ok"):
         return dict(failed="; ".join(r.get("errors", [])))
     return dict(reset=f"{r['object']} was at {r['was']}; it is back at {r['now_cm']} cm, where it started")
