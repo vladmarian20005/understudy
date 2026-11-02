@@ -33,6 +33,8 @@ EDGE = 0.85  # jaws stopping narrower than this share of the object's width caug
 CORRECT = 2  # times a grip point that ends short of where it was sent is sent again
 MISS_CM = 0.7  # short by more than this
 MAX_FIX_CM = 2.5  # at most this much past (more is something in the way)
+FIXED_FACE_MM = 35.0  # the grip point is this far in from the fixed finger's inner face (scene.json's gripper)
+JAW_CLEAR_MM = 2.0  # the fixed finger passes this far outside what it grips (6 pushed a 67 mm ball off: 4 of 4 slipped)
 REGRIPS = 2  # then they open, go in deeper and close again, this many times at most
 # where each grip point parks: raised, level and out to the side, so the overhead camera sees the table (31 Oct: home
 # hid 430 cm2 of it, the left arm right over the balls; this hides about 50, all near the bases)
@@ -131,6 +133,14 @@ def reach(side, g, head, p, yaw, speed="slow"):
     return arms
 
 
+def moving_jaw_dir(side, arm):
+    """The table direction (unit, 2D) from the fixed finger toward the moving one, for an arm as it stands."""
+    a = tools.scene().arms[side]
+    _, R = a.tool(arm["joints"])
+    j = (R @ a.jaw)[:2]
+    return j / max(np.linalg.norm(j), 1e-6)
+
+
 def grasp(side, arms, object, height=None, pitch=None, lift=5.0, offset=None):
     """Grip point onto the object at height (cm above the table; default its middle), fingers along the line from
     the arm's base, jaws square to it: open wide, come down in front of it, go in, close with the capped force, hold,
@@ -183,7 +193,21 @@ def grasp(side, arms, object, height=None, pitch=None, lift=5.0, offset=None):
         across = kf([start[0], start[1], now[2]], head, held_pitch, None)
         if robot.move(**{side: [across] + frames}, check_only=True).get("outcome") == "done":
             frames = [across] + frames
-    yield Stage(frames[:-1])
+    # The SO-101's jaws aren't symmetric: one finger is fixed, 35 mm from the grip point (FIXED_FACE_MM), and the
+    # other opens away from it. Centred on the grip point, anything wider than about 60 mm meets the fixed finger as
+    # it comes in (2 Nov: it knocked the 78 mm can over, then closed on nothing). So the grip point goes toward the
+    # fixed finger by what clears it, JAW_CLEAR_MM: the thing then sits nearer the moving one. Which way that is,
+    # the arm's own pose says once it is at the approach's start, above or in front of the thing.
+    k = len(frames) - (2 if p >= STEEP else 3)  # the approach's start
+    arms = yield Stage(frames[:k + 1])
+    shift = max(0.0, wide * 10 / 2 + JAW_CLEAR_MM - FIXED_FACE_MM) / 10  # cm
+    off = np.zeros(3)  # from the grip point to the thing's middle, once gripped
+    if shift > 0:
+        off = np.append(moving_jaw_dir(side, arms[side]) * shift, 0.0)
+        g = g - off
+        frames = frames[:k + 1] + approach(p)[1:]
+    if frames[k + 1:-1]:
+        yield Stage(frames[k + 1:-1])
     yield from reach(side, g, head, p, yaw)
     regrips = 0
     while True:
@@ -204,7 +228,9 @@ def grasp(side, arms, object, height=None, pitch=None, lift=5.0, offset=None):
         yield Stage([{"width": width}, frames[0]])
         raise Failed(f"{side} closed on nothing at {object} (jaws shut to {w:.0f} mm, {regrips} re-grips): opened "
                      "and backed off")
-    robot.hold(side, o["name"], o["size_cm"], [float(g[0]), float(g[1])], o.get("z_cm", H / 2), o.get("yaw", 0.0))
+    center = g + off  # what it holds sits off the grip point by the shift
+    robot.hold(side, o["name"], o["size_cm"], [float(center[0]), float(center[1])], o.get("z_cm", H / 2),
+               o.get("yaw", 0.0))
     yield Stage([{"width": max(0.0, w - tools.GRIP_HOLD_MM)}, {"rel": [0, 0, float(lift)], "pitch": float(p)}])
     ma, w2 = current(side), robot.status()["arms"][side]["width_mm"]
     if ma < HOLD_MA or w2 < tools.HOLD_MIN_MM:
