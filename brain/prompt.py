@@ -5,7 +5,8 @@ from harness.scene import Scene
 # how far the jaws open, from scene.json (2 Nov: the prompts said 84 mm, the old gripper's, while the original SO-101
 # gripper opens 98: Muse then refused to hold a can the jaws fit round)
 JAWS_MM = round(Scene().stroke_mm)
-HOLD_MAX_MM = JAWS_MM - 13  # the widest thing a grasp holds: it opens about 20 mm wider to come round it
+HOLD_MAX_MM = JAWS_MM - 4  # the widest thing a grasp holds: the fixed finger clears it by 2 mm (act.JAW_CLEAR_MM), the
+# moving one closes from the far side
 
 RIG = """Two robot arms (SO-101, each with a parallel gripper) work on a table.
 

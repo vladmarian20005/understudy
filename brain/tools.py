@@ -65,9 +65,11 @@ GRIP_NEAR_CM = 4.0  # an object this close to the grip point is the one being gr
 SHRUNK = 0.6  # a detection this much smaller than the object was seen whole is an arm covering part of it
 MATCH_CM = 5.0  # a detection this close to a remembered object of the same name is that object
 FORGET_LOOKS = 10
+TRUE_MATCH_CM = 8.0
 
 _scene = None
-_memory = dict(looks=0, objects=[], counts={})  # objects as last seen whole, each with the look it was seen at
+_memory = dict(looks=0, objects=[], counts={})
+_sim = {}  # "on": robotd runs the simulator (asked once a run)  # objects as last seen whole, each with the look it was seen at
 # what SAM looks for on the overhead image, set from the task (brain/plan.py); empty: robotd's colour detector
 FIND = []
 # side -> the pitch it was last sent to. A nudge keeps that, not the measured one: an arm stretched out sags a few
@@ -121,6 +123,7 @@ def reset():
     """Forget the objects: a new run starts from what the camera sees."""
     _memory.update(looks=0, objects=[], counts={})
     _pitch.clear()
+    _sim.clear()
 
 
 def new_name(kind, alone):
@@ -242,6 +245,25 @@ def label(o):
     return o["name"]
 
 
+def true_sizes(objs):
+    """In the simulator, each object SAM found gets the size the simulator built it with (the nearest one there, within
+    TRUE_MATCH_CM): one camera's estimate of a width or a height is off by a centimetre or more (2 Nov: a 78 mm can
+    seen as 78 to 91 mm from one run to the next, and the plan to hold it or not flipped with it). On the real
+    arms, the estimates stay."""
+    if "on" not in _sim:
+        _sim["on"] = bool(robot.status().get("sim"))
+    if not _sim["on"] or not objs:
+        return objs
+    truth = robot.detect().get("objects", [])
+    out = []
+    for o in objs:
+        near = min(truth, key=lambda t: np.linalg.norm(np.subtract(t["center_cm"], o["center_cm"])), default=None)
+        if near is not None and np.linalg.norm(np.subtract(near["center_cm"], o["center_cm"])) < TRUE_MATCH_CM:
+            o = dict(o, size_cm=list(near["size_cm"]), z_cm=near.get("z_cm", o.get("z_cm")))
+        out.append(o)
+    return out
+
+
 def look(cams=("overhead",)):
     """Fresh images and positions. With FIND set, the objects are SAM's (by name, any colour) and the overhead image
     gets the grid, the grippers and their names drawn on; otherwise robotd's colour detector and overlay."""
@@ -260,6 +282,7 @@ def look(cams=("overhead",)):
         except Exception as e:  # SAM down: what the colour detector sees, rather than nothing
             print(f"SAM failed ({e}): colour detector instead", flush=True)
             objs = seen.get("objects", [])
+        objs = true_sizes(objs)
         remember(objs, {h["name"] for h in held.values()})
         for s, h in held.items():  # what a gripper holds is where the gripper has it
             for o in _memory["objects"]:

@@ -34,7 +34,8 @@ SYSTEM = RIG + """
 You plan and run a task on these arms. You first make the whole plan; then it runs step by step, with no call to you
 in between unless a step asks for a check or fails. Then you see fresh images and decide.
 
-Objects come from a segmentation model on the overhead image, by name: center_cm [x, y], size_cm [L, W, H], and shape:
+Objects come from a segmentation model on the overhead image, by name: center_cm [x, y], size_cm [L, W, H] (in the
+simulator, its exact sizes), and shape:
 "round" (as tall as wide), "upright" (a standing thing; its height comes from the image and is good to a few cm;
 "at least this tall" when its top is cut off by the image's edge) or "flat" (its height is a guess). What an arm last
 grasped is listed under it as last_grasped: where it is if it's still in the jaws (center, top and bottom, top being
@@ -80,10 +81,12 @@ Rules:
   refused. A standing object's top is at its height; held upright and lifted, it is higher still.
 - To put something into something: hold it above the opening ("move above" by 2-4 cm, leaving pitch out: it picks
   one that reaches, level over a tall thing), check, then open.
-- Do it the way the video does, each arm in the role of the hand on its side: if a hand holds a container up while
-  the other fills it, one arm holds it (grasp, lift, move it where the other arm reaches above it) and the other
-  fills it. Only a thing wider than about {HOLD} mm, which the jaws can't hold, stays standing where it is, and then
-  the things come to it.
+- Do it the way the video does, each arm in the role of the hand on its side. What a hand picks up or holds in the
+  video, an arm picks up or holds, whenever it is narrower than {HOLD} mm (size_cm's width): if a hand holds a
+  container up while the other fills it, one arm must grasp it, lift it and hold it where the other arm reaches above
+  it, and the other arm fills it. Only a thing at least {HOLD} mm wide, which the jaws can't hold, stays where it is.
+- Steps of the video with things that aren't on the robot's table (in the object list) are left out: there is
+  nothing to do them with.
 - Move a held container gently and keep it upright (keep the pitch it was grasped at); bring it nearer the middle
   so the other arm reaches above its opening, about 25-30 cm in front of the bases.
 - After every step you get fresh images from all three cameras and judge it before anything else moves. Give each
