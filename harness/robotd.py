@@ -180,9 +180,9 @@ class Core:
 
     # ---- state ----------------------------------------------------------------------------------------------------
     def sim_reset(self, req):
-        """Put an object back where the scene started it, but only when no arm can reach it where it really is (off
-        the table, or farther than RESET_REACH_CM from both bases): the brain may not use it to undo a mistake an arm
-        could fix. name: the object; kind and near_cm (its last seen centre) pick among same-kind ones when the
+        """Put an object back where the scene started it, standing, but only when the arms can't recover it where and
+        how it really is: knocked over (not a ball), off the table, or farther than RESET_REACH_CM from both bases.
+        The brain may not use it to undo a mistake an arm could fix. name: the object; kind and near_cm (its last seen centre) pick among same-kind ones when the
         brain's name for it isn't the simulator's."""
         if not self.sim or not hasattr(self.world, "reset"):
             return dict(ok=False, errors=["reset is only in the HD simulator: on the real table a person puts it back"])
@@ -201,9 +201,15 @@ class Core:
         reach = [s for s, d in dist.items() if RESET_REACH_CM[0] <= d <= RESET_REACH_CM[1]]
         where = f"({xy[0] * 100:.0f}, {xy[1] * 100:.0f}) cm, " + ", ".join(f"{d:.0f} cm from the {s} base"
                                                                             for s, d in dist.items())
-        if on_table and reach:
-            return dict(ok=False, errors=[f"not reset: {o.name} is at {where}, within the {' and '.join(reach)} arm's "
-                                          "reach: pick it up with the arms"], where=where)
+        # knocked over: its own up leans more than 45 deg from the table's (a ball has no up)
+        tilt = float(np.degrees(np.arccos(np.clip(o.R[2, 2], -1.0, 1.0))))
+        tipped = o.kind != "ball" and tilt > 45
+        if on_table and reach and not tipped:
+            return dict(ok=False, errors=[f"not reset: {o.name} is at {where}, standing ({tilt:.0f} deg from upright), "
+                                          f"within the {' and '.join(reach)} arm's reach: handle it with the arms"],
+                        where=where)
+        if tipped:
+            where += f", lying {tilt:.0f} deg from upright"
         self.world.reset(o.name)
         x, y, _ = self.world.start[o.name]
         self.event(f"reset {o.name}: it was at {where}" + ("" if on_table else ", off the table"), "warn")

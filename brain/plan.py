@@ -22,10 +22,12 @@ import numpy as np
 from harness import robot
 
 from . import act, tools
-from .prompt import RIG
+from .prompt import HOLD_MAX_MM, JAWS_MM, RIG
 
 SHAPES = ["cylinder", "box", "cup", "bowl", "ball"]  # plain shape words SAM also looks for, in case a name misses
 MAX_STEPS = 80
+MAX_STUCK = 6  # checks in a row that find the step didn't work: the run ends (2 Nov: 57 steps around a tipped can)
+REVIEW_EVERY = 12  # steps: then the check also asks whether the table got any nearer done
 MAX_CALLS = 120  # a check after every step (1 Nov), so about one call per step
 
 SYSTEM = RIG + """
@@ -47,7 +49,8 @@ Actions, one per arm per step; a step's left and right actions run at the same t
   coming in along the line from that arm's base: jaws open wider than the object, down in front of it, in, close with
   a capped force, hold, lift by lift cm (default 5). pitch: 90 fingers straight down, 0 level; left out: the
   steepest that reaches, or for an object 10 cm or taller the most level that reaches (from the side): leave it
-  out unless you have a reason. The jaws open to 84 mm: what they close on must be narrower than about 80 mm there.
+  out unless you have a reason. The jaws open to {JAWS} mm: what they close on must be narrower than about {HOLD} mm
+  there.
   If the jaws close narrower than the object (they caught its edge), the grasp goes deeper and grips again by
   itself, and every approach is corrected for an arm that stops short. It fails cleanly (jaws open, backed
   off) when they close on nothing or it slips on the lift. offset shifts the grip point in the gripper's own
@@ -62,10 +65,11 @@ Actions, one per arm per step; a step's left and right actions run at the same t
 - {"do": "open"}: let go. {"do": "grip"}: close where it is (grasp already grips).
 - {"do": "nudge", "forward": cm, "right": cm, "up": cm}: a small step in the gripper's own directions.
 - {"do": "park"}: raised, level, out to the side, so the camera sees the table.
-- A whole step {"reset": NAME} (no left or right): the simulator puts that thing back where it started. Only for a
-  thing no arm can reach any more: knocked off the table, or past both arms' reach (farther than about 45 cm from
-  both bases). It is checked against where the thing really is and refused when an arm can still reach it; then
-  handle it with the arms. Never use it to undo a miss, a slip or a thing tipped over within reach.
+- A whole step {"reset": NAME} (no left or right): the simulator puts that thing back where it started, standing.
+  Only for a thing the arms can't recover: knocked over (lying on its side, not a ball), knocked off the table, or
+  past both arms' reach (farther than about 45 cm from both bases). It is checked against where and how the thing
+  really is and refused otherwise; then handle it with the arms. Never use it to undo a miss or a slip, or for a
+  ball that rolled within reach. A thing that tipped over is reset first, before anything else.
 
 Rules:
 - Every step is checked before anything moves: reach, the table, a held object's clearance above it, and a 1.5 cm
@@ -76,16 +80,20 @@ Rules:
   refused. A standing object's top is at its height; held upright and lifted, it is higher still.
 - To put something into something: hold it above the opening ("move above" by 2-4 cm, leaving pitch out: it picks
   one that reaches, level over a tall thing), check, then open.
-- Copy what the video achieves, not each hand motion. A person holds a container up to fill it; the arms can leave
-  it standing where it is and bring things to it, when one arm reaches its opening. Don't pick up or move a tall
-  thing whose width is within about 10 mm of the jaws' 84 mm: the grip slips and a wrong approach knocks it over.
-  If nothing can reach where it stands, say so (done, not success) rather than knock it about.
+- Do it the way the video does, each arm in the role of the hand on its side: if a hand holds a container up while
+  the other fills it, one arm holds it (grasp, lift, move it where the other arm reaches above it) and the other
+  fills it. Only a thing wider than about {HOLD} mm, which the jaws can't hold, stays standing where it is, and then
+  the things come to it.
+- Move a held container gently and keep it upright (keep the pitch it was grasped at); bring it nearer the middle
+  so the other arm reaches above its opening, about 25-30 cm in front of the bases.
 - After every step you get fresh images from all three cameras and judge it before anything else moves. Give each
   step a "check": what the images should show if it worked. The wrist cameras look along the fingers: to see into
   something from above (whether a thing landed inside a container), a step can hold that wrist over it pointing
   down (pitch 90) and look.
+- When the task can't be done with these actions (what it needs is out of reach or can't be held, or the same
+  thing has failed three times the same way), finish: done, success false, and say why. Don't wander.
 - Reply with JSON only, no other text.
-"""
+""".replace("{JAWS}", str(JAWS_MM)).replace("{HOLD}", str(HOLD_MAX_MM))
 
 PLAN_ASK = """Make the plan. Reply with JSON:
 {"understanding": "what has to happen and how the arms will do it, 2-4 sentences",
@@ -294,7 +302,7 @@ class Run:
         done_when = plan.get("done_when", "the task is done")
         if plan_only:
             return self.end(False, "planned only: nothing moved", t0)
-        i = 0
+        i, stuck = 0, 0
         while self.stats["steps"] < max_steps and self.calls < MAX_CALLS:
             if i >= len(steps):  # the plan ran out: is it done?
                 seen = self.look(("left", "right"), tag=f"{self.stats['steps']:02d}_end")
@@ -321,13 +329,20 @@ class Run:
             # trust while the simulator showed all three on the table): all three cameras, fresh
             seen = self.look(("left", "right"), tag=f"{n:02d}")
             ahead = "; ".join(f"{k}. {describe(s)}" for k, s in enumerate(steps[i + 1:i + 6], 1)) or "none"
+            review = "" if n % REVIEW_EVERY else (
+                f"\n\nProgress review, every {REVIEW_EVERY} steps: compare the table now with {REVIEW_EVERY} steps ago "
+                f"against done when: {done_when}. If it got no nearer, the plan isn't working: finish with done, "
+                "success false, and say what stopped it.")
             v = self.ask(self.seen_parts(
                 f"Step {n} ran: {describe(step)}\nResults: {json.dumps(results)}\n"
                 f"Should be true now: {step.get('check') or step.get('why') or 'what the step was for'}"
                 + (" (a part of it failed: what now?)" if failed else "") + f"\nNext in the plan: {ahead}"
-                + ("" if len(steps) <= i + 6 else f" (and {len(steps) - i - 6} more)"), seen)
+                + ("" if len(steps) <= i + 6 else f" (and {len(steps) - i - 6} more)") + review, seen)
                 + [{"type": "text", "text": CHECK_ASK}], effort="low")
             self.log(f"    check: {'ok' if v.get('ok') else 'not ok'}: {v.get('why', '')}")
+            stuck = 0 if v.get("ok") else stuck + 1
+            if stuck >= MAX_STUCK and not v.get("done"):
+                return self.end(False, f"gave up: {stuck} steps in a row didn't work; the last: {v.get('why', '')}", t0)
             if v.get("done"):
                 return self.end(bool(v["done"].get("success")), str(v["done"].get("summary", "")), t0)
             nxt = list(v.get("next") or [])

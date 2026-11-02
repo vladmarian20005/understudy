@@ -24,6 +24,7 @@ from harness.scene import Scene
 from harness.skills import HOLD_MIN_MM
 
 from . import sam
+from .prompt import JAWS_MM
 
 ARM = {"type": "string", "enum": ["left", "right"]}
 XY = {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "table cm [x, y]"}
@@ -36,7 +37,7 @@ KEYFRAME = {
                 "description": "[dx, dy, dz] table cm from where the previous keyframe left the fingertips"},
         "yaw": {"type": "number", "description": "jaw line angle on the table, degrees (0 = along x); left out: kept"},
         "pitch": {"type": "number", "description": "90 straight down, 0 level; left out: the steepest that reaches"},
-        "width": {"type": "number", "description": "gripper opening, mm (0-84)"},
+        "width": {"type": "number", "description": f"gripper opening, mm (0-{JAWS_MM})"},
     },
 }
 WRISTS = {"left": "left_wrist", "right": "right_wrist"}
@@ -99,7 +100,7 @@ TOOLS = [
        "opening they stopped at (and the object's width, when one is at the grip point); on nothing they open again.",
        {"arm": ARM}, ["arm"]),
     fn("open", "Open the jaws (to let go, or before reaching for something).",
-       {"arm": ARM, "width": {"type": "number", "description": "opening, mm (default fully open, 84)"}}, ["arm"]),
+       {"arm": ARM, "width": {"type": "number", "description": f"opening, mm (default fully open, {JAWS_MM})"}}, ["arm"]),
     fn("home", "Park one or both arms out of the way (the start pose).",
        {"arms": {"type": "string", "enum": ["both", "left", "right"]},
         "width": {"type": "number", "description": "gripper opening, mm"}}),

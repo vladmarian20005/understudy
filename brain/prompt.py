@@ -1,5 +1,11 @@
 """The system prompts: the rig (RIG, shared with the planner in plan.py), and for the step-by-step loop the tools and
 a general way to handle things by sight."""
+from harness.scene import Scene
+
+# how far the jaws open, from scene.json (2 Nov: the prompts said 84 mm, the old gripper's, while the original SO-101
+# gripper opens 98: Muse then refused to hold a can the jaws fit round)
+JAWS_MM = round(Scene().stroke_mm)
+HOLD_MAX_MM = JAWS_MM - 13  # the widest thing a grasp holds: it opens about 20 mm wider to come round it
 
 RIG = """Two robot arms (SO-101, each with a parallel gripper) work on a table.
 
@@ -15,7 +21,8 @@ The table, in cm (every coordinate you give and get is in this frame):
 - How high, about 30 cm out from a base: the fingertips get up to about 34 cm above the table with the gripper level
   (pitch 0), 30 at pitch 15, 24 at 30, 18 at 45, and lower the steeper it is. To hold something above a tall object, go
   level.
-- The gripper opens 0-84 mm and grips with a capped force: firm, but it can't crush.
+- The gripper opens 0-{JAWS} mm and grips with a capped force: firm, but it can't crush. It holds
+  things up to about {HOLD} mm across.
 """
 
 SYSTEM = """You drive two robot arms (SO-101, each with a parallel gripper) on a table, through tools, one call at a
@@ -36,7 +43,7 @@ The table, in cm (every coordinate you give and get is in this frame):
 - How high, about 30 cm out from a base: the fingertips get up to about 34 cm above the table with the gripper level
   (pitch 0), 30 at pitch 15, 24 at 30, 18 at 45, and lower the steeper it is. To hold something above a tall object, go
   level. move with check_only tells you whether a pose reaches, without moving.
-- The gripper opens 0-84 mm.
+- The gripper opens 0-{JAWS} mm.
 
 What you get after every call, as numbers:
 - Each arm's pose: tip_cm (the fingertips' x, y and height z), pitch, yaw and width_mm (the jaw opening).
@@ -93,3 +100,7 @@ Rules:
 - When the task is finished, send the arms home unless the task says otherwise, then call done. success is true only
   if the latest images and positions show the goal met.
 """
+
+
+RIG = RIG.replace("{JAWS}", str(JAWS_MM)).replace("{HOLD}", str(HOLD_MAX_MM))
+SYSTEM = SYSTEM.replace("{JAWS}", str(JAWS_MM)).replace("{HOLD}", str(HOLD_MAX_MM))

@@ -120,7 +120,7 @@ def test_reset_puts_back_only_what_no_arm_can_reach():
     core = Core(sim_mode=True, speed=0, quiet=True, dataset=None, hd=True, objects="balls")
     try:
         r = core.handle(dict(cmd="sim_reset", name="tube"))  # where the scene put it: in reach
-        assert not r["ok"] and "within the" in r["errors"][0] and "pick it up with the arms" in r["errors"][0]
+        assert not r["ok"] and "within the" in r["errors"][0] and "handle it with the arms" in r["errors"][0]
         core.world.place("tube", (0.40, 0.44))  # knocked past both arms' reach
         r = core.handle(dict(cmd="sim_reset", name="tube"))
         assert r["ok"] and r["object"] == "tube" and r["now_cm"] == [4.0, 30.0]
@@ -130,5 +130,13 @@ def test_reset_puts_back_only_what_no_arm_can_reach():
         r = core.handle(dict(cmd="sim_reset", name="ball 4", kind="ball", near_cm=[39, 43]))
         assert r["ok"] and r["object"] == "ball 1"
         assert not core.handle(dict(cmd="sim_reset", name="cup"))["ok"]
+        # knocked over within reach: the arms can't stand it up, so it may be reset
+        tube = next(o for o in core.world.objects if o.name == "tube")
+        with core.world.lock:
+            core.world.data.qpos[tube.qadr:tube.qadr + 7] = [0.05, 0.28, 0.045, 0.7071068, 0.7071068, 0.0, 0.0]
+            mujoco.mj_forward(core.world.model, core.world.data)
+        r = core.handle(dict(cmd="sim_reset", name="tube"))
+        assert r["ok"] and "lying 90 deg from upright" in r["was"]
+        assert tube.R[2, 2] > 0.99  # standing again
     finally:
         core.close()
