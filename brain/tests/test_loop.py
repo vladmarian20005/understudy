@@ -1,7 +1,6 @@
 """The loop against the simulator, with a scripted model: each action reaches robotd, the result and fresh images come
 back in the next turn, and the run ends on done."""
 import itertools
-import json
 import threading
 
 import numpy as np
@@ -111,7 +110,6 @@ def test_an_arm_may_not_go_into_what_the_other_holds(sim):
     r.closed["right"] = 60.0
     r.held["right"] = dict(name="tube", length=24.0, below=12.0, roll0=r.roll("right", arms["right"]))
     b, t = r.ends("right", arms["right"])
-    mid = (b + t) / 2
     assert "go into the tube" in r.clash("left", arms, b + np.array([-4.0, 0.0, 2.0]))
     assert r.clash("left", arms, t + np.array([-2.0, 0.0, 8.0])) is None  # well over its top: fine
     _, g2, _ = see.axes("right", arms["right"]["joints"])
@@ -135,7 +133,6 @@ def test_the_drop_over_the_opening_is_allowed_and_the_tube_waits(sim):
     r.held["right"] = dict(name="tube", length=24.0, below=12.0, roll0=r.roll("right", arms["right"]), at_least=True)
     b, t = r.ends("right", arms["right"])
     # the left already right over the opening, lowering straight down: the drop
-    import types
     real_axes = see.axes
     over = t + np.array([0.5, 0.0, 6.0])
     see_axes = lambda side, joints: (over + [0, 3, 0], over, (np.array([0, 1.0, 0]), np.array([1.0, 0, 0]),

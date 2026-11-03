@@ -11,7 +11,7 @@ import importlib
 import json
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PRICES = {"muse-spark": (1.25, 4.25)}  # $ per million input, output tokens

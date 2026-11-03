@@ -182,8 +182,8 @@ class Core:
     def sim_reset(self, req):
         """Put an object back where the scene started it, standing, but only when the arms can't recover it where and
         how it really is: knocked over (not a ball), off the table, or farther than RESET_REACH_CM from both bases.
-        The brain may not use it to undo a mistake an arm could fix. name: the object; kind and near_cm (its last seen centre) pick among same-kind ones when the
-        brain's name for it isn't the simulator's."""
+        The brain may not use it to undo a mistake an arm could fix. name: the object; kind and near_cm (its last seen
+        centre) pick among same-kind ones when the brain's name for it isn't the simulator's."""
         if not self.sim or not hasattr(self.world, "reset"):
             return dict(ok=False, errors=["reset is only in the HD simulator: on the real table a person puts it back"])
         objs = [o for o in self.world.objects if not self.world.holder(o)]
@@ -446,7 +446,8 @@ def main():
     ap.add_argument("--speed", type=float, default=1.0, help="simulator speed (1 = real time, 0 = flat out)")
     ap.add_argument("--hd", action="store_true",
                     help="simulator: the MuJoCo one (harness/mjsim.py): CAD arms, original gripper, physics, renders")
-    ap.add_argument("--objects", default="brush", help=f"simulator scene: {', '.join(sim.SCENES)} (--hd also balls, or a scene .json)")
+    ap.add_argument("--objects", default="brush",
+                    help=f"simulator scene: {', '.join(sim.SCENES)} (--hd also balls, or a scene .json)")
     ap.add_argument("--noise", type=float, default=0.0, help="simulated perception error, cm")
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--dataset", default="understudy", help="episodes go to datasets/<name>")
