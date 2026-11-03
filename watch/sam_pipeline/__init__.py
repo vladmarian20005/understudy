@@ -1,19 +1,16 @@
-"""SAM 3.1 segmentation pipeline for "Watch, Delegate, Distill".
+"""The watch pipeline: a video of a person's hands through Muse Spark and SAM 3.1 into a score.
 
-The package is split by concern:
-
-    config       tunables and the clip-selection vocabulary
+    config       tunables
     budget       the shared request ledger
-    clips        picking hand-to-hand passes out of Ego4D narrations
     video        ffmpeg/ffprobe wrappers
-    sam_client   Meta Model API transport
+    muse_client  Muse Spark through Meta's Model API: what the hands did, and what they touched
+    sam_client   SAM 3.1 through Meta's Model API
     masks        COCO RLE encode/decode and the mask sidecar dump
-    parsing      SAM's text output -> per-frame detections
-    analysis     detections -> contract objects, events and steps
-    pipeline     one video through SAM (shared by both modes)
+    detections   SAM's text output -> per-frame detections
+    analysis     detections -> the score's objects, events and handover
+    pipeline     one video through SAM
     preview      the annotated preview.mp4
-    ego4d        mode: Ego4D clips -> score.json
-    episode      mode: robot episode -> vision.json
+    muse_mode    a video -> score.json
     cli          argument parsing and entry point
 """
 

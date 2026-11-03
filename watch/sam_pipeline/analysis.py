@@ -1,4 +1,4 @@
-"""From detections to the contract's objects, events and robot steps."""
+"""From detections to the score's objects, events and handover."""
 
 from __future__ import annotations
 
@@ -28,9 +28,9 @@ def overlap(a, b, pad: float = HOLD_BOX_PAD) -> float:
 def assign_sides(dets: list[Det], frame_w: int, frame_h: int) -> dict[int, dict[str, Det]]:
     """Per frame, label up to two holders as "left" / "right".
 
-    Ego4D: the wearer's own hands are the biggest ones in the lower part of the image.
-    Robot: the two grippers. Left/right by horizontal position; a lone holder goes to
-    whichever side it was nearest to last time.
+    A head-mounted camera: the wearer's own hands are the biggest ones in the lower part of
+    the image. Left/right by horizontal position; a lone holder goes to whichever side it
+    was nearest to last time.
     """
     by_frame: dict[int, list[Det]] = {}
     for d in dets:
@@ -159,34 +159,16 @@ def object_summary(name: str, track: list[Det], n_frames: int, every: list[Det] 
             "instances": instances, "start_px": r(track[0].centroid), "end_px": r(track[-1].centroid)}
 
 
-def steps_from_events(events: list[dict], giver: str | None, taker: str | None) -> list[dict]:
-    """The primitive sequence the robot should run to reproduce this clip (contract op names).
-
-    The robot always starts empty-handed, so all five steps are listed. "t" is when the
-    video shows that step, or null when the clip doesn't show it (e.g. the person already
-    held the tool when the clip starts).
-    """
-    passes = [e for e in events if e["kind"] == "pass"]
-    if passes:
-        giver, taker = passes[0]["from"], passes[0]["to"]
-    if not (giver and taker):
-        return []
-    p = passes[0] if passes else None
-    g = next((e for e in events if e["kind"] == "grasp" and e.get("arm") == giver
-              and (not p or e["t"] <= p["t"])), None)
-    rel = next((e for e in events if e["kind"] == "release" and e.get("arm") == taker
-                and (not p or e["t"] >= p["t_end"])), None)
-    t_grasp = g["t"] if g else None
-    t_pass, t_pass_end = (p["t"], p["t_end"]) if p else (None, None)
-    t_rel = rel["t"] if rel else None
-    return [
-        {"op": "reach", "arm": giver, "t": [None, t_grasp] if t_grasp is not None else None},
-        {"op": "grasp", "arm": giver, "t": [t_grasp, t_pass] if t_grasp is not None else None},
-        {"op": "handover", "giver": giver, "taker": taker, "mode": "air",
-         "t": [t_pass, t_pass_end] if p else None},
-        {"op": "move_to", "arm": taker, "t": [t_pass_end, t_rel] if p and rel else None},
-        {"op": "release", "arm": taker, "t": [t_rel, t_rel] if rel else None},
-    ]
+def handover_summary(p: dict | None, track, fps: float) -> dict | None:
+    """The score's handover block (watch/SCORE.md): when both start holding, when the giver lets go, how long both
+    hold, and where the object was meanwhile (its mask centroid nearest the middle of the pass)."""
+    if p is None:
+        return None
+    mid = round((p["t"] + p["t_end"]) / 2 * fps)
+    near = min(track, key=lambda d: abs(d.frame - mid), default=None)
+    return {"t": p["t"], "t_end": p["t_end"], "both_s": round(p["t_end"] - p["t"], 2),
+            "at_px": [round(near.centroid[0]), round(near.centroid[1])] if near is not None else None,
+            "at_cm": None}
 
 
 @dataclass

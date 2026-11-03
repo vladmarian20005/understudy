@@ -1,7 +1,7 @@
 """One run from the dashboard: a video and a task in words, taken through the whole loop.
 
     watch    Muse Spark watches the video and says what the hands did and which objects they touched
-    segment  SAM 3.1 segments those objects and the hands      (both: python -m watch.sam_ego4d video, as a process)
+    segment  SAM 3.1 segments those objects and the hands      (both: python -m watch, as a process)
     scene    (python -m ui --sim) Muse rebuilds the video's objects for the simulator (watch/simscene.py) and robotd
              restarts on that scene (ui/simulator.py)
     plan     what the brain gets: the description and Muse's reading of the video (and, after a hand-to-hand pass,
@@ -115,9 +115,9 @@ class Job:
 
 
 def run_watch(job, log_line=None):
-    """python -m watch.sam_ego4d video on the upload; returns the folder with score.json, muse.json, the clips."""
+    """python -m watch on the upload; returns the folder with score.json, muse.json, the clips."""
     out = os.path.join(job.dir, "sam")
-    cmd = [sys.executable, "-m", "watch.sam_ego4d", "--out", out, "video", "--video", job.video_path]
+    cmd = [sys.executable, "-m", "watch", "--out", out, "--video", job.video_path]
     p = subprocess.Popen(cmd, cwd=HERE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                          encoding="utf-8", errors="replace", env=dict(os.environ, PYTHONUNBUFFERED="1"))
     tail = []

@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 def cut_clip(src: Path, dst: Path, start: float, duration: float, width: int, fps: float) -> None:
-    """Re-encode to H.264 (Ego4D full-scale is VP9, which SAM doesn't accept)."""
+    """Re-encode to H.264 (SAM doesn't accept VP9 and the like)."""
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start:.3f}", "-i", str(src),
            "-t", f"{duration:.3f}", "-vf", f"scale={width}:-2,fps={fps}",
            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
