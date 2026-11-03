@@ -84,7 +84,6 @@ class Core:
         self.ev_id = 0
         self.ev_lock = threading.Lock()
         self.holding = {s: None for s in SIDES}
-        self.last_objects = []
         self.cancel = threading.Event()
         self.skill = {}
         self.skill_ids = itertools.count(1)
@@ -278,7 +277,6 @@ class Core:
 
     def look(self, cams=("overhead",), annotate=True):
         dets = self.perception.detect() if self.perception else []
-        self.last_objects = dets
         images = {}
         if self.cameras is not None:
             for n, img in self.cameras.grab([c for c in cams if c in CAMERAS]).items():
@@ -301,9 +299,7 @@ class Core:
         if cmd == "look":
             return self.look(req.get("cams", ["overhead"]), req.get("annotate", True))
         if cmd == "detect":
-            dets = self.perception.detect() if self.perception else []
-            self.last_objects = dets
-            return dict(ok=True, objects=dets)
+            return dict(ok=True, objects=self.perception.detect() if self.perception else [])
         if cmd == "skill":
             return self.start_skill(req.get("name"), req.get("args") or {})
         if cmd == "grip_force":  # cap a gripper's torque, % of the motor's, and start a new current peak

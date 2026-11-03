@@ -152,9 +152,7 @@ class Skills:
         return None
 
     def detect(self):
-        dets = self.core.perception.detect()
-        self.core.last_objects = dets
-        return dets
+        return self.core.perception.detect()
 
     def resolve(self, target):
         d = perception.find(self.detect(), target)

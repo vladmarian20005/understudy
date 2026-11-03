@@ -17,7 +17,7 @@ from harness import robot
 from harness.robotd import Core, serve as serve_robotd
 from ui import jobs
 from ui.server import serve
-from ui.thinking import Narrated, reasoning_of, with_reasoning
+from ui.thinking import reasoning_of, with_reasoning
 
 SCORE = {"version": 1, "kind": "score", "task": "x", "object": {"name": "paintbrush"},
          "source": {"kind": "video", "muse": {"summary": "left hand passes the paintbrush to the right hand",
@@ -71,7 +71,7 @@ def test_muses_answers_read_as_words():
     assert jobs.say({"do": "done", "success": False, "summary": "the ball rolled off"}) == "Giving up: the ball rolled off"
 
 
-# ---- reasoning, narrated replies --------------------------------------------------------------------------------------
+# ---- reasoning ----------------------------------------------------------------------------------------------------------
 def response(**message):
     return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(model_extra={}, **message))])
 
@@ -84,22 +84,14 @@ def test_reasoning_is_caught_whichever_field_the_api_uses():
     assert reasoning_of(response()) is None and reasoning_of(object()) is None
 
 
-def test_with_reasoning_wraps_the_client_and_narrated_reports_each_turn():
+def test_with_reasoning_keeps_each_replys_reasoning_on_the_backend():
     completions = SimpleNamespace(create=lambda **kw: response(reasoning_content="thinking hard"))
     backend = SimpleNamespace(client=SimpleNamespace(chat=SimpleNamespace(completions=completions)), model="m")
-
-    def chat(system, messages, tools):
-        backend.client.chat.completions.create()
-        return Reply("I'll open the jaws.", [], {"role": "assistant", "content": ""}, model="m")
-
-    backend.chat = chat
     with_reasoning(backend)
-    seen = []
-    n = Narrated(backend, lambda turn, reply, reasoning: seen.append((turn, reply.text, reasoning)))
-    n.chat("s", [], [])
-    n.chat("s", [], [])
-    assert seen == [(1, "I'll open the jaws.", "thinking hard"), (2, "I'll open the jaws.", "thinking hard")]
-    assert n.model == "m" and with_reasoning(Scripted([])).model == "scripted"  # no client: left as it is
+    assert backend.last_reasoning is None
+    backend.client.chat.completions.create()
+    assert backend.last_reasoning == "thinking hard"
+    assert with_reasoning(Scripted([])).model == "scripted"  # no client: left as it is
 
 
 # ---- a whole run, against the simulator ----------------------------------------------------------------------------

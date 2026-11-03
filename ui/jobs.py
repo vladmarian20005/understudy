@@ -23,7 +23,6 @@ import time
 import uuid
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STAGES = ["watch", "segment", "scene", "plan", "act", "judge"]
 MAX_VIDEO_BYTES = 400 * 1024 * 1024
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
 

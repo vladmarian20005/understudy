@@ -1,5 +1,5 @@
 """The contract between robotd and the brain, UI and recorder consumers ("Understudy contracts" doc): every command's
-reply shape, the failure kinds, and the episode label file. A change here is a change Andrei's side has to know about."""
+reply shape, the failure kinds, and the episode label file. A change here is a change every client has to know about."""
 import json
 import time
 
