@@ -132,12 +132,14 @@ class BusArmIO:
 
 class LeaderIO:
     """A leader arm, read only, in the followers' units: lerobot degrees for the joints and mm for the gripper, mapped
-    like lerobot's own teleop (the leader's 0-100 gripper is the follower's 0-100)."""
+    like lerobot's own teleop (the leader's 0-100 gripper is the follower's 0-100). roll_deg is added to the wrist
+    roll: with 90, a leader whose wrist is held vertical puts the follower's gripper level, its camera on top."""
 
-    def __init__(self, port, calibration_id, stroke_mm, bus=None):
+    def __init__(self, port, calibration_id, stroke_mm, bus=None, roll_deg=0.0):
         from lerobot.motors import Motor, MotorCalibration, MotorNormMode
 
         self.stroke = float(stroke_mm)
+        self.roll = float(roll_deg)
         if bus is None:
             from lerobot.motors.feetech import FeetechMotorsBus
 
@@ -152,7 +154,9 @@ class LeaderIO:
 
     def read(self):
         pos = self.bus.sync_read("Present_Position", num_retry=RETRIES)
-        return np.array([pos[j] for j in JOINTS] + [pos["gripper"] / 100 * self.stroke], dtype=float)
+        q = np.array([pos[j] for j in JOINTS] + [pos["gripper"] / 100 * self.stroke], dtype=float)
+        q[4] += self.roll
+        return q
 
     def close(self):
         self.bus.disconnect(disable_torque=False)

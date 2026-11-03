@@ -138,7 +138,8 @@ class Core:
         leaders = {}
         for s, cfg in self.scene.leaders.items():
             try:
-                leaders[s] = LeaderIO(cfg["port"], cfg["calibration"], self.scene.stroke_mm)
+                leaders[s] = LeaderIO(cfg["port"], cfg["calibration"], self.scene.stroke_mm,
+                                      roll_deg=cfg.get("roll_deg", 0.0))
             except Exception as e:
                 self.event(f"no {s} leader ({e}): taking over the {s} arm by hand is off", "warn")
         return leaders
