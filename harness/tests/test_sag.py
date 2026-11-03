@@ -1,4 +1,4 @@
-"""Gravity sag and touch-down, in the simulator with its servos sagging like the real ones."""
+"""Gravity sag, in the simulator with its servos sagging like the real ones."""
 import time
 
 import numpy as np
@@ -60,7 +60,7 @@ def test_the_sag_is_learned_while_holding_and_compensated(core):
         assert c[1] == pytest.approx(1200, rel=0.15) and c[2] == pytest.approx(1300, rel=0.15)
     # the model learned at home carries over to a pose it never held
     p = np.append(core.scene.middle(), 0.12)
-    assert run(core, "move_to", arm="left", xy=list(p[:2] * 100), z=12)["outcome"] == "done"
+    assert run(core, "move", left={"xy": list(p[:2] * 100), "z": 12})["outcome"] == "done"
     assert tip_error_mm(core, "left") < 3.0
 
 
@@ -80,57 +80,38 @@ def test_the_learned_sag_survives_a_restart(tmp_path):
     assert np.allclose(ctl.sag["left"].c, np.round(learned, 1))
 
 
-def test_a_grasp_touches_the_table_first(core):
-    run(core, "home")
-    r = run(core, "pick", arm="left", target="brush")
-    assert r["outcome"] == "done", r["why"]
-    assert any("left touched down" in e["text"] for e in core.events_since(0))
-    brush = core.world.objects[0]
-    believed = (core.skills.tool_T("left") @ core.holding["left"]["rel"])[:3, 3]
-    assert np.linalg.norm(believed - brush.pos) < 0.003  # it knows where the brush is in its hand
-
-
-def test_a_finger_on_top_of_the_object_is_reported(core):
-    run(core, "home")
+def grip_brush(core):
+    """The left gripper closes on the brush from above: open over it, down to 1 cm, close."""
     d = core.perception.detect()[0]
-    jaw = np.radians(d["yaw"] + 90)
-    off = [2.6 * np.cos(jaw), 2.6 * np.sin(jaw)]  # shifted along the jaws: one finger lands on the brush
-    r = run(core, "pick", arm="left", target="brush", offset=off)
-    assert r["outcome"] == "failed" and r["fail"] == "finger_on_object", r
-    assert not core.world.objects[0].held
-
-
-def test_setting_down_stops_when_the_object_meets_the_table(core):
-    run(core, "home")
-    assert run(core, "pick", arm="left", target="brush")["outcome"] == "done"
-    r = run(core, "place", arm="left", xy=[-14, 28])
-    assert r["outcome"] == "done", r["why"]
-    brush = core.world.objects[0]
-    assert not brush.held and np.hypot(*(brush.pos[:2] * 100 - [-14, 28])) < 1.5
-    assert sum("left touched down" in e["text"] for e in core.events_since(0)) == 2  # grasp, then set-down
+    for kf in ({"xy": d["center_cm"], "z": 6, "yaw": d["yaw"] + 90, "pitch": 90, "width": 60}, {"z": 1}, {"width": 0}):
+        assert run(core, "move", left=kf)["outcome"] == "done"
+    assert list(core.world.objects[0].held) == ["left"]
 
 
 def test_a_held_object_may_not_be_swung_into_the_table(core):
     run(core, "home")
-    assert run(core, "pick", arm="left", target="brush")["outcome"] == "done"
+    tip = core.arms_state()["left"]["tip_cm"]  # robotd is told it holds a brush across its fingertips
+    assert core.handle(dict(cmd="hold", arm="left", name="brush", size_cm=[20, 3, 2.5], center_cm=tip[:2],
+                            z_cm=tip[2]))["ok"]
     h = core.holding["left"]
     T = core.skills.tool_T("left")
     assert np.min(held_corners(T, h)[:, 2]) > 0.01
     tip = T[:3, 3]
     with pytest.raises(Exception, match="would hit the table"):
-        core.planner.plan(core.ctl.snapshot()["goal"], [Phase("low", {"left": Goal(p=[tip[0], tip[1], 0.012])})])
+        core.planner.plan(core.ctl.snapshot()["goal"],
+                          [Phase("low", {"left": Goal(p=[tip[0], tip[1], 0.012], pitch="steep")})])
 
 
 def test_an_arm_that_stops_short_is_reported_blocked(core):
     run(core, "home")
     core.world.solid_in_the_way = lambda side, q0, q1: side == "left"
-    r = run(core, "move_to", arm="left", xy=[-10, 30], z=8)
+    r = run(core, "move", left={"xy": [-10, 30], "z": 8})
     assert r["outcome"] == "stopped" and r["fail"] == "blocked", r
 
 
-def test_no_sag_is_learned_while_holding_something(core):
+def test_no_sag_is_learned_while_squeezing_something(core):
     run(core, "home")
-    assert run(core, "pick", arm="left", target="brush")["outcome"] == "done"
+    grip_brush(core)
     n = core.ctl.sag["left"].samples
     t0 = core.ctl.now()
     while core.ctl.now() - t0 < 1.5:  # holds the brush still

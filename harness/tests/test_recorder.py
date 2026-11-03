@@ -24,12 +24,18 @@ def core(tmp_path):
     c.close()
 
 
-def episode(core, target):
-    r = core.handle(dict(cmd="episode_begin", task="Pass the brush to the other arm", giver="left", taker="right",
+STEPS = [("move", dict(left={"rel": [0, 0, -5]}, right={"rel": [0, 0, -5]})), ("move", dict(left={"width": 60})),
+         ("home", {})]
+
+
+def episode(core):
+    """One episode: both arms down a little, the left gripper opened, home. Its target is where the brush already is,
+    so robotd's check passes."""
+    target = core.handle(dict(cmd="detect"))["objects"][0]["center_cm"]
+    r = core.handle(dict(cmd="episode_begin", task="Leave the brush where it is", giver="left", taker="right",
                          target_cm=target))
     assert r["ok"], r
-    for name, args in [("pick", dict(arm="left", target="brush")), ("handover", dict(giver="left", taker="right")),
-                       ("place", dict(arm="right", xy=target)), ("home", {})]:
+    for name, args in STEPS:
         assert run(core, name, **args)["outcome"] == "done"
     end = core.handle(dict(cmd="episode_end"))
     assert end["ok"], end
@@ -39,14 +45,14 @@ def episode(core, target):
 def test_one_episode_loads_in_lerobot(core):
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-    ep, end = episode(core, [12, 24])
+    ep, end = episode(core)
     assert ep == 0 and 0 < end["frames"] < end["duration_s"] * 30
     ds = LeRobotDataset("local/test_pass", root=core.recorder.root)
     assert ds.num_episodes == 1 and ds.num_frames == end["frames"]
     item = ds[ds.num_frames // 2]
     assert tuple(item["observation.state"].shape) == (12,) and tuple(item["action"].shape) == (12,)
     assert tuple(item["observation.images.left_overhead"].shape) == (3, 480, 640)
-    assert item["task"] == "Pass the brush to the other arm"
+    assert item["task"] == "Leave the brush where it is"
 
 
 def written(rows):
@@ -54,7 +60,7 @@ def written(rows):
     one 6 values of which the last is the gripper in mm; the stroke is 100 mm, so mm are % here."""
     core = SimpleNamespace(ctl=SimpleNamespace(listeners=[]), world=None, scene=SimpleNamespace(stroke_mm=100.0))
     rec = Recorder(core)
-    rec.ep, rec.queue = dict(recording=True, index=0, last_written=None, skipped=0, frame_t=[]), queue.Queue()
+    rec.ep, rec.queue = dict(recording=True, index=0, last_written=None, skipped=0), queue.Queue()
     rec.t0, rec.next_t = 0.0, 0.0
     for k, (state, goal, right) in enumerate(rows):
         rec._tick(k / FPS, dict(left=np.array(state, dtype=float), right=np.array(right, dtype=float)),
@@ -89,7 +95,7 @@ def test_slow_motion_adds_up_and_gets_written():
 def test_an_episode_has_no_idle_frames(core):
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-    _, end = episode(core, [12, 24])
+    _, end = episode(core)
     label = json.load(open(end["sidecar"]))
     assert label["robot"]["idle_frames_skipped"] > 0 and label["frames"] == end["frames"]
     data = LeRobotDataset("local/test_pass", root=core.recorder.root).hf_dataset
@@ -100,11 +106,10 @@ def test_an_episode_has_no_idle_frames(core):
 
 
 def test_label_file_and_final_decision(core):
-    ep, end = episode(core, [12, 24])
+    ep, end = episode(core)
     label = json.load(open(end["sidecar"]))
     robot = label["robot"]
-    assert [s["op"] for s in robot["steps"]] == ["pick", "handover", "place", "home"]
-    assert [e["kind"] for e in robot["events"]] == ["grasp", "pass", "release"]
+    assert [s["op"] for s in robot["steps"]] == ["move", "move", "home"]
     assert robot["check"]["passed"] and robot["object"]["name"] == "brush"
     assert robot["steps"][0]["t"][0] >= 0 and robot["steps"][-1]["t"][1] <= end["duration_s"] + 0.1
     r = core.handle(dict(cmd="episode_label", episode=ep, section="judge",
@@ -115,16 +120,8 @@ def test_label_file_and_final_decision(core):
 
 
 def test_episodes_append(core):
-    episode(core, [12, 24])
-    # the brush is on the right now: pass it back
-    r = core.handle(dict(cmd="episode_begin", task="Pass the brush to the other arm", giver="right", taker="left",
-                         target_cm=[-12, 24]))
-    assert r["ok"] and r["episode"] == 1
-    for name, args in [("pick", dict(arm="right", target="brush")), ("handover", dict(giver="right", taker="left")),
-                       ("place", dict(arm="left", xy=[-12, 24]))]:
-        res = run(core, name, **args)
-        assert res["outcome"] == "done", res["why"]
-    assert core.handle(dict(cmd="episode_end"))["ok"]
+    episode(core)
+    assert episode(core)[0] == 1
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
     assert LeRobotDataset("local/test_pass", root=core.recorder.root).num_episodes == 2
 

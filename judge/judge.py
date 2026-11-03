@@ -1,12 +1,11 @@
-"""The judge: did a recorded episode do its task? Muse Spark looks at the overhead camera at the start, around the
-handover and at the end, reads what robotd recorded (and SAM's vision section, if there is one), and returns the
+"""The judge: did a recorded episode do its task? Muse Spark looks at the overhead camera at the start, in the
+middle and at the end, reads what robotd recorded (and SAM's vision section, if there is one), and returns the
 label's judge section.
 
 It judges on its own evidence: it isn't shown robotd's end check or the brain's claim of success, so when it agrees
 with robotd's check (which final() requires before an episode trains), that agreement means something.
 """
 import json
-import time
 
 from . import frames as fr
 
@@ -51,33 +50,21 @@ class JudgeError(Exception):
 
 
 def pick_frames(label):
-    """[(frame index, what it is)]: the start, just after the handover (or the middle), and the end."""
+    """[(frame index, what it is)]: the start, the middle and the end."""
     n = int(label.get("frames") or 0)
-    fps = float(label.get("fps") or 30)
-    if n <= 0:
-        return []
-    picks = [(0, "start")]
-    passes = [e for e in (label.get("robot") or {}).get("events", []) if e.get("kind") == "pass"]
-    if passes and passes[0].get("t") is not None:
-        picks.append((passes[0].get("frame", round(passes[0]["t"] * fps)), "just after the handover"))
-    else:
-        picks.append((n // 2, "middle"))
-    picks.append((n - 1, "end"))
     out, seen = [], set()
-    for i, why in picks:
-        i = min(max(int(i), 0), n - 1)
-        if i not in seen:
+    for i, why in ((0, "start"), (n // 2, "middle"), (n - 1, "end")):
+        if n > 0 and i not in seen:
             seen.add(i)
             out.append((i, why))
-    return sorted(out)
+    return out
 
 
 def describe(label):
     """What the judge is told in words. Left out on purpose: robotd's end check, its idea of where the object
     ended, and the brain's own verdict (the agents section)."""
     robot = label.get("robot") or {}
-    steps = [{k: s[k] for k in ("op", "arm", "giver", "taker", "t", "outcome", "fail", "why", "width_mm") if k in s}
-             for s in robot.get("steps", [])]
+    steps = [{k: s[k] for k in ("op", "t", "outcome", "fail", "why") if k in s} for s in robot.get("steps", [])]
     facts = {
         "task": label.get("task"),
         "who": (label.get("source") or {}).get("kind"),

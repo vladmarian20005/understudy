@@ -1,12 +1,13 @@
 """Blocking Python client for robotd: one function per command, each returns robotd's reply.
 
     from harness import robot
-    seen = robot.look()                       # objects + the overhead image
-    r = robot.pick("left", "#1")              # waits until the motion is done
+    seen = robot.look()                                  # objects + the overhead image
+    r = robot.move(left={"rel": [0, 3, 0]}, speed="slow")  # waits until the motion is done
     if r["outcome"] != "done": print(r["fail"], r["why"])
 
-Motion commands return the result described in the contracts doc: op, arm, outcome (done | refused | failed |
-stopped), fail, why, t, arms, events, plus width_mm after a grasp. Arguments left as None aren't sent.
+Motion commands (move, home) return the result described in the contracts doc: op, outcome (done | refused | failed |
+stopped), fail, why, t, arms, events, plus width_mm for an arm that holds something. Arguments left as None aren't
+sent.
 """
 import base64
 import json
@@ -54,41 +55,12 @@ def _motion(name, **args):
     return dict(op=name, outcome="stopped", fail="timeout", why=f"{name} didn't finish in {TIMEOUT_S} s")
 
 
-def reach(arm, target=None, xy=None, z=None, yaw=None, width=None, offset=None):
-    return _motion("reach", arm=arm, target=target, xy=xy, z=z, yaw=yaw, width=width, offset=offset)
-
-
-def grasp(arm, width=None, offset=None):
-    return _motion("grasp", arm=arm, width=width, offset=offset)
-
-
-def move_to(arm, xy, z=None, yaw=None, pitch=None):
-    return _motion("move_to", arm=arm, xy=xy, z=z, yaw=yaw, pitch=pitch)
-
-
 def move(left=None, right=None, speed=None, check_only=None, avoid=None):
     return _motion("move", left=left, right=right, speed=speed, check_only=check_only, avoid=avoid)
 
 
-def release(arm, set_down=None, on_z=None):
-    """Let go; set_down: lower it until it rests on something first (on_z m: the top of what it is set on)."""
-    return _motion("release", arm=arm, set_down=set_down, on_z=on_z)
-
-
-def handover(giver, taker, mode=None, at=None):
-    return _motion("handover", giver=giver, taker=taker, mode=mode, at=at)
-
-
 def home(arms=None, width=None):
     return _motion("home", arms=arms, width=width)
-
-
-def pick(arm, target, width=None, offset=None):
-    return _motion("pick", arm=arm, target=target, width=width, offset=offset)
-
-
-def place(arm, xy=None, on=None, yaw=None):
-    return _motion("place", arm=arm, xy=xy, on=on, yaw=yaw)
 
 
 def grip_force(arm, pct):

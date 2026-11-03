@@ -9,7 +9,6 @@ episode_label stores the vision, judge and agents sections, and once the judge h
 
 Units in the dataset: joints in lerobot degrees, the gripper 0-100 (0 = closed), like lerobot's SO-101 recordings.
 """
-import bisect
 import datetime
 import json
 import os
@@ -133,7 +132,7 @@ class Recorder:
             self.ep = dict(index=self.ds.meta.total_episodes, task=task, source=source or {"kind": "unspecified"},
                            giver=giver, taker=taker, target_cm=target_cm, frames=0, camera_gaps=0, recording=True,
                            steps=[], bus0=self.core.ctl.bus_faults, takeovers0=self.core.ctl.takeovers,
-                           ev0=self.core.ev_id, start_objects=objects, last_written=None, skipped=0, frame_t=[],
+                           ev0=self.core.ev_id, start_objects=objects, last_written=None, skipped=0,
                            started=datetime.datetime.now().astimezone().isoformat(timespec="milliseconds"))
             self.queue = queue.Queue()
             self.worker = threading.Thread(target=self._work, daemon=True, name="recorder")
@@ -210,7 +209,6 @@ class Recorder:
             self.ep["skipped"] += 1
             return
         self.ep["last_written"] = state, action
-        self.ep["frame_t"].append(t - self.t0)
         snap = self.core.world.snapshot() if self.core.world is not None else None
         self.queue.put((state, action, snap))
 
@@ -238,27 +236,14 @@ class Recorder:
 
     def on_step(self, result):
         if self.active():
-            self.ep["steps"].append({k: result.get(k) for k in ("op", "arm", "giver", "taker", "t", "outcome", "fail",
-                                                                "why", "width_mm") if result.get(k) is not None})
+            self.ep["steps"].append({k: result.get(k) for k in ("op", "t", "outcome", "fail", "why")
+                                     if result.get(k) is not None})
 
     # ---- the label ------------------------------------------------------------------------------------------------
     def _label_path(self, episode):
         return os.path.join(self.root, "sidecar", f"{episode:06d}.json")
 
     def _robot_label(self, ep, duration, valid, note):
-        events = []
-        for s in ep["steps"]:
-            if s["outcome"] != "done":
-                continue
-            t = s["t"][1]
-            if s["op"] in ("grasp", "pick"):
-                events.append(dict(t=t, kind="grasp", arm=s["arm"], width_mm=s.get("width_mm")))
-            elif s["op"] in ("release", "place"):
-                events.append(dict(t=t, kind="release", arm=s["arm"]))
-            elif s["op"] == "handover":
-                events.append(dict(t=t, kind="pass", **{"from": s["giver"], "to": s["taker"]}))
-        for e in events:  # frames don't map to the clock (idle ones aren't written): the first frame from then on
-            e["frame"] = min(bisect.bisect_left(ep["frame_t"], e["t"]), max(len(ep["frame_t"]) - 1, 0))
         objects = self.core.perception.detect() if self.core.perception else []
         obj = None
         if objects:
@@ -278,7 +263,7 @@ class Recorder:
                               taker=ep["taker"], target_cm=ep["target_cm"], valid=bool(valid), note=note,
                               idle_frames_skipped=ep["skipped"],
                               camera_gaps=ep["camera_gaps"], bus_faults=ep.get("bus_faults", 0),
-                              interventions=self.core.ctl.takeovers - ep["takeovers0"], steps=ep["steps"], events=events, object=obj, check=check,
+                              interventions=self.core.ctl.takeovers - ep["takeovers0"], steps=ep["steps"], object=obj, check=check,
                               log=[dict(t=e["t"], kind=e["kind"], text=e["text"])
                                    for e in self.core.events_since(ep["ev0"])])}
 

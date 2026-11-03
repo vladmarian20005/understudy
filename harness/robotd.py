@@ -3,7 +3,7 @@
     python -m harness.robotd --sim            simulated arms, objects and cameras (armed at start)
     python -m harness.robotd                  the real arms: press a to switch torque on
 
-It owns the 50 Hz controller, the planner, perception and the primitives, and serves one JSON request at a time on
+It owns the 50 Hz controller, the planner, perception and the motions, and serves one JSON request at a time on
 ZMQ REP (tcp://127.0.0.1:5560, ROBOTD_PORT). No request can switch torque on: only the a key can.
 Keys: a = torque on (hold where they are), space = stop, x twice = torque off, q = quit.
 """
@@ -247,7 +247,7 @@ class Core:
     def busy(self):
         return bool(self.skill.get("running"))
 
-    # ---- primitives -----------------------------------------------------------------------------------------------
+    # ---- motions --------------------------------------------------------------------------------------------------
     def start_skill(self, name, args):
         with self.skill_lock:
             if self.busy():

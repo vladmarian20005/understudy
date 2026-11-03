@@ -79,19 +79,36 @@ def run(core, name, **args):
     return core.skill["result"]
 
 
-def test_robotd_picks_a_ball_by_friction_and_sets_it_down():
+def settle(core, seconds):
+    t0 = core.ctl.now()
+    while core.ctl.now() - t0 < seconds:
+        time.sleep(0.005)
+
+
+def test_a_ball_is_held_by_friction_when_the_jaws_close_on_it():
+    """The loop's grasp, by moves: in front of the ball on the line from the base, tilted 35 deg, then the grip point
+    onto its middle, and close. It comes up with the gripper and falls when the jaws open."""
     core = Core(sim_mode=True, speed=0, quiet=True, hd=True, objects="balls", dataset=None)
     try:
         ball = core.world.objects[0]
-        r = run(core, "pick", arm="left", target=ball.name)
-        assert r["outcome"] == "done", r.get("why")
-        assert ball.held == ["left"] and r["width_mm"] == pytest.approx(67, abs=4)
-        assert core.ctl.snapshot()["grip_ma"]["left"] > 200  # squeezing
-        assert run(core, "move_to", arm="left", xy=[-10, 28], z=20)["outcome"] == "done"
+        core.world.place(ball.name, (-0.26, 0.34))  # where a tilted gripper reaches it, clear of the other balls
+        settle(core, 0.5)
+        mid = ball.pos * 100
+        head = mid[:2] - core.scene.base_xy("left") * 100
+        head /= np.linalg.norm(head)
+        c, s = np.cos(np.radians(35)), np.sin(np.radians(35))
+        for back, width in ((6, 90), (0, None)):  # the fingertips are 3 cm past the grip point
+            tip = mid - np.append(head * back, 0) + 3.0 * np.array([c * head[0], c * head[1], -s])
+            kf = dict(xy=list(tip[:2]), z=float(tip[2]), pitch=35, **({"width": width} if width else {}))
+            assert run(core, "move", left=kf, speed="slow")["outcome"] == "done"
+        assert run(core, "move", left={"width": 0})["outcome"] == "done"
+        settle(core, 0.5)
+        assert ball.held == ["left"] and core.ctl.snapshot()["grip_ma"]["left"] > 200  # squeezing
+        assert run(core, "move", left={"rel": [0, 0, 10]})["outcome"] == "done"
         assert ball.held == ["left"] and ball.pos[2] > 0.12  # carried, not dragged
-        assert run(core, "place", arm="left", xy=[-15, 20])["outcome"] == "done"
+        assert run(core, "move", left={"width": 90})["outcome"] == "done"
+        settle(core, 1.5)
         assert not ball.held and ball.pos[2] == pytest.approx(0.0335, abs=0.003)
-        assert np.linalg.norm(ball.pos[:2] * 100 - [-15, 20]) < 5  # the opening jaw can flick it: it rolls a bit
     finally:
         core.close()
 
