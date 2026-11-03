@@ -26,7 +26,7 @@ def main():
     ap.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to open it from another computer on the network")
     ap.add_argument("--no-browser", action="store_true")
     ap.add_argument("--runs", default=os.path.join(HERE, "ui_runs"), help="where runs are kept")
-    ap.add_argument("--max-steps", type=int, help="the most plan steps per run (default: brain/plan.py's)")
+    ap.add_argument("--max-steps", type=int, help="the most steps per run (default: brain/loop.py's)")
     ap.add_argument("--no-record", action="store_true", help="don't record runs as episodes (and so don't judge them)")
     a = ap.parse_args()
 
