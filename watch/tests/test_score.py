@@ -7,8 +7,8 @@ import sys
 WATCH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, WATCH)  # sam_pipeline lives in watch/
 
+from sam_pipeline.analysis import handover_summary  # noqa: E402
 from sam_pipeline.detections import Det  # noqa: E402
-from sam_pipeline.ego4d import handover_summary  # noqa: E402
 
 
 def test_the_example_in_score_md_is_a_score():

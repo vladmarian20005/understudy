@@ -1,9 +1,8 @@
-"""Mode: video (any video -> Muse Spark reads it -> SAM segments what it named -> score.json).
+"""A video -> Muse Spark reads it -> SAM segments what it named -> score.json.
 
-The ego4d mode gets its SAM prompt from the narration. A plain video has none, so Muse
-Spark supplies both halves: an egocentric run of the actions, and the objects the hands
-touched. Those objects become SAM's concept prompts, and the result is written in the same
-score format (watch/SCORE.md) as every other source.
+Nothing in a plain video says what to segment, so Muse Spark supplies both halves: an
+egocentric run of the actions, and the objects the hands touched. Those objects become
+SAM's concept prompts, and the result is written as a score (watch/SCORE.md).
 """
 
 from __future__ import annotations
@@ -13,11 +12,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from sam_pipeline.analysis import analyse, object_summary, pick_object_track, steps_from_events
+from sam_pipeline.analysis import analyse, handover_summary, object_summary, pick_object_track
 from sam_pipeline.budget import Budget
 from sam_pipeline.config import MODEL, object_fallbacks
 from sam_pipeline.credentials import api_key
-from sam_pipeline.ego4d import handover_summary
 from sam_pipeline.muse_client import PROMPT, MuseClient, MuseReading, parse_reading
 from sam_pipeline.pipeline import segment_video
 from sam_pipeline.preview import preview_colors, render_preview
@@ -73,7 +71,7 @@ def run_video(args, budget: Budget) -> None:
     outdir = args.out / "videos" / video.stem
     outdir.mkdir(parents=True, exist_ok=True)
 
-    # SAM wants H.264, and a small frame loses small tools (watch/NOTES.md), so re-encode once
+    # SAM wants H.264, and a small frame loses small tools, so re-encode once
     clip = outdir / "clip.mp4"
     if not clip.exists():
         cut_clip(video, clip, 0, n / fps, min(args.width, display_width(video, w, h)), fps)
@@ -142,10 +140,8 @@ def run_video(args, budget: Budget) -> None:
         "handover": handover_summary(passes[0] if passes else None, a.track, fps),
         "target_cm": None,
         "vision": {"model": MODEL, "objects": objects, "events": events},
-        "steps": steps_from_events(events, giver, taker),
         "quality": {
             "pass_seen": bool(passes),
-            "agrees_with_narration": None,        # no narration: Muse's summary is not ground truth
             "object_visible": objects[0]["visible"],
             "object_prompt": a.object_prompt,
             "object_prompt_fallback": a.object_prompt != primary,

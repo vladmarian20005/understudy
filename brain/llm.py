@@ -11,7 +11,7 @@ import importlib
 import json
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PRICES = {"muse-spark": (1.25, 4.25)}  # $ per million input, output tokens
@@ -89,7 +89,7 @@ class Muse:
                      u.completion_tokens if u else 0, time.time() - t0, self.model)
 
     def ask(self, system, messages, effort=None):
-        """A plain answer, no tools (the planner's JSON). effort: the model's reasoning effort ("high" to think a
+        """A plain answer, no tools (the loop's JSON). effort: the model's reasoning effort ("high" to think a
         plan through, "low" for quick checks); None: the model's default."""
         t0 = time.time()
         extra = {} if effort is None else {"reasoning_effort": effort}

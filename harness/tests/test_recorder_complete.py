@@ -1,6 +1,5 @@
 """A dataset folder counts as resumable only with a whole first episode: else lerobot's resume() goes to the Hub."""
 import json
-import os
 
 from harness.recorder import complete
 

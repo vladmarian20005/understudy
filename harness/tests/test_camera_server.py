@@ -197,8 +197,8 @@ def test_a_camera_drop_out_marks_the_episode_invalid(tmp_path):
 
     core.cameras.grab = flaky
     try:
-        assert core.handle(dict(cmd="episode_begin", task="Pass the brush to the other arm"))["ok"]
-        assert core.start_skill("pick", dict(arm="left", target="brush"))["ok"]
+        assert core.handle(dict(cmd="episode_begin", task="Move the left arm"))["ok"]
+        assert core.start_skill("move", dict(left={"xy": [-10, 30], "z": 8}))["ok"]
         while core.busy():
             time.sleep(0.005)
         end = core.handle(dict(cmd="episode_end"))

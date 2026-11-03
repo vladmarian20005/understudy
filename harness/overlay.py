@@ -1,5 +1,5 @@
 """What an agent sees on the overhead image: the table's cm grid, every object's id, and both grippers (where they are,
-how high, their jaw line and opening). Coordinates read off the grid are the ones the primitives take.
+how high, their jaw line and opening). Coordinates read off the grid are the ones moves take.
 
 The grid is the table frame: x to the right, y away from the arms' bases, in cm; a line every 5 cm, numbered every
 10 cm along the near and left edges. A gripper is drawn at its fingertips, with a thin line down to the table point

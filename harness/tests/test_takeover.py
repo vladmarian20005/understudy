@@ -2,7 +2,6 @@
 import json
 import time
 
-import numpy as np
 import pytest
 
 from harness import controller, sim
@@ -48,7 +47,7 @@ def sim_wait(core, seconds):
 def test_moving_a_leader_takes_over_and_stops_the_skill(realtime):
     core = realtime
     sim_wait(core, 0.1)
-    assert core.start_skill("move_to", dict(arm="left", xy=[-10, 30], z=12))["ok"]
+    assert core.start_skill("move", dict(left={"xy": [-10, 30], "z": 12}))["ok"]
     sim_wait(core, 0.2)
     core.leaders["left"].q[0] += 20  # a person swings the left leader's base
     assert wait(lambda: not core.busy())

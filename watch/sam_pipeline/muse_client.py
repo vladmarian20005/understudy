@@ -1,7 +1,6 @@
 """Muse Spark through Meta's Model API: watch a video, say what the hands did.
 
-SAM needs to be told what to segment. For Ego4D the narration supplies that word; for a
-video with no narration -- a rig recording, a phone clip -- nothing does. Muse Spark
+SAM needs to be told what to segment, and nothing in a plain video says it. Muse Spark
 watches the clip and answers both halves at once: the egocentric run of actions, and the
 objects those actions touched, which become SAM's concept prompts.
 
@@ -14,7 +13,7 @@ import json
 import os
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import requests

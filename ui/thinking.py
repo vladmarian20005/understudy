@@ -1,9 +1,6 @@
-"""The brain's model, narrated: every reply is reported the moment it arrives, so the page can show Muse thinking while
-it drives the arms.
-
-What Muse says before each call is in the reply's text (the brain's prompt asks it to say what it sees and what it'll
-do). When the API also returns the model's reasoning (a reasoning_content or reasoning field on the message), that is
-caught too and shown above the text.
+"""Muse's reasoning, for the page: what Muse says is in each reply's text (what it sees, its plan, its action), and when
+the API also returns the model's reasoning (a reasoning_content or reasoning field on the message), that is caught too
+and shown above the text.
 """
 
 
@@ -41,24 +38,3 @@ def with_reasoning(backend):
     completions.create = create_and_keep
     backend.last_reasoning = None
     return backend
-
-
-class Narrated:
-    """A backend that reports each reply: on_reply(turn, reply, reasoning)."""
-
-    def __init__(self, inner, on_reply):
-        self.inner = inner
-        self.on_reply = on_reply
-        self.turn = 0
-
-    @property
-    def model(self):
-        return getattr(self.inner, "model", "")
-
-    def chat(self, system, messages, tools):
-        if hasattr(self.inner, "last_reasoning"):
-            self.inner.last_reasoning = None
-        reply = self.inner.chat(system, messages, tools)
-        self.turn += 1
-        self.on_reply(self.turn, reply, getattr(self.inner, "last_reasoning", None))
-        return reply

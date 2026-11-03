@@ -1,8 +1,6 @@
-"""Tunables and the vocabulary that decides which Ego4D clips are relevant."""
+"""Tunables: the SAM model, who holds the tool, and the prompt fallbacks."""
 
 from __future__ import annotations
-
-import re
 
 # --------------------------------------------------------------------------------------
 # Meta Model API
@@ -12,36 +10,9 @@ BILLING_MIN_FRAMES = 50
 MAX_FRAMES_PER_REQUEST = 15000
 
 # --------------------------------------------------------------------------------------
-# What counts as a relevant clip
-# --------------------------------------------------------------------------------------
-SCENARIOS = ["Crafting/knitting/sewing/drawing/painting"]
-
-# Narration verbs that describe moving something between hands.
-VERBS = r"(?:transfer|pass|switch|change|move|shift|swap|hand)(?:s|es|ed|ing)?"
-HAND_TO_HAND = [
-    re.compile(rf"\b{VERBS}\b(?P<obj>.*?)\bfrom\s+(?:his|her|their|the|c'?s)?\s*(?P<src>left|right)\s+hand\s+(?:to|into|in)\s+(?:his|her|their|the|c'?s)?\s*(?P<dst>left|right|other)\s+hand", re.I),
-    re.compile(rf"\b{VERBS}\b(?P<obj>.*?)\b(?:to|into|in)\s+(?:his|her|their|the|c'?s)?\s*(?P<dst>left|right|other)\s+hand", re.I),
-    re.compile(r"\b(?:switch|change|swap)(?:s|es|ed|ing)?\b(?P<obj>.*?)\bhands\b", re.I),
-]
-
-# Rigid, light, elongated things two small grippers can pass mid-air. First word wins as SAM prompt.
-GOOD_OBJECTS = {
-    "paintbrush": "paintbrush", "paint brush": "paintbrush", "brush": "paintbrush",
-    "pen": "pen", "pencil": "pencil", "marker": "marker", "crayon": "crayon",
-    "glue stick": "glue stick", "glue": "glue stick", "ruler": "ruler",
-    "stick": "stick", "chalk": "chalk", "highlighter": "marker", "spool": "spool",
-    "tube": "paint tube", "eraser": "eraser", "scissors": "scissors",
-}
-# Things the arms should not try (bendy, tiny, sharp).
-BAD_OBJECTS = ["thread", "yarn", "wool", "fabric", "cloth", "paper", "needle", "knife",
-               "cutter", "blade", "bead", "string", "tape"]
-
-ARTICLES = re.compile(r"\b(?:the|a|an|his|her|their|some|piece of|c'?s|c)\b", re.I)
-
-# --------------------------------------------------------------------------------------
 # Deciding who is holding the tool
 # --------------------------------------------------------------------------------------
-# Tuned against the 21 narrated hand-to-hand passes in the Ego4D crafting set, scoring
+# Tuned against 21 narrated hand-to-hand passes in first-person crafting videos, scoring
 # against the narration's own giver/taker. The shipped defaults (0.15 / 0.1 / no gap)
 # found 5 of 21; these find 13, with no direction ever flipped by the loosening.
 #

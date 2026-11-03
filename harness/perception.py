@@ -46,15 +46,6 @@ class SimPerception:
         return number(dets)
 
 
-def find(dets, target):
-    """The detection a target names: "#2" or "2", or a name or colour that matches exactly one object."""
-    t = str(target).strip().lower()
-    if t.lstrip("#").isdigit():
-        return next((d for d in dets if d["id"] == "#" + t.lstrip("#")), None)
-    hits = [d for d in dets if t in d["name"].lower() or t == d["color"]]
-    return hits[0] if len(hits) == 1 else None
-
-
 SAT_MIN, VAL_MIN = 80, 60  # coloured objects; the table and the arms are grey
 MIN_AREA_PX = 120
 ARM_BAND = 0.05  # m: half-width of the band masked out around each arm

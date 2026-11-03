@@ -39,14 +39,14 @@ def flaky(core, side, fails):
 
 def test_a_few_missed_reads_dont_stop_a_motion(core):
     flaky(core, "left", {3, 10, 11})
-    assert run(core, "move_to", arm="left", xy=[-12, 26], z=12)["outcome"] == "done"
+    assert run(core, "move", left={"xy": [-12, 26], "z": 12})["outcome"] == "done"
     assert core.ctl.bus_faults == 0
 
 
 def test_a_run_of_missed_reads_stops_the_motion_and_spoils_the_episode(core):
     assert core.handle(dict(cmd="episode_begin", task="t"))["ok"]
     flaky(core, "left", set(range(10, 10 + controller.BUS_STOP_TICKS + 3)))
-    r = run(core, "move_to", arm="left", xy=[-12, 26], z=12)
+    r = run(core, "move", left={"xy": [-12, 26], "z": 12})
     assert r["outcome"] == "stopped" and r["fail"] == "blocked" and "bus" in r["why"]
     texts = [e["text"] for e in core.events_since(0)]
     assert any("bus not answering" in t for t in texts) and any("answering again" in t for t in texts)
