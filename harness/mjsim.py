@@ -4,6 +4,7 @@ rendered from the calibrated overhead pose and the wrist-camera mounts.
 
     python -m harness.robotd --sim --hd [--objects balls]       robotd on it (the other --sim flags work too)
     python -m harness.mjsim [--objects balls] [--out rig.png]   a still of the rig and its three cameras
+    (--objects: a scene name, or a scene file such as watch/simscene.py makes from a video)
     python -m harness.mjsim --view                              MuJoCo's viewer on the rig (drag to look around)
 
 It stands in for sim.SimWorld behind the same interface (io, step, snapshot, visible_objects, place, the faults), so
@@ -46,6 +47,10 @@ GRIP_DEFAULT_PCT = 70.0  # bus.py's Max_Torque_Limit (700): the cap until grip_f
 IDLE_MA, FULL_MA = 60.0, 730.0  # gripper current idle, plus this at full torque (a 30 % cap squeezing: ~280 mA, bench)
 CLOSED_DEG, OPEN_DEG = -15.0, 90.0  # the moving jaw's travel: past 90 deg its tip swings back up
 ARM_TYPE, WORLD_TYPE = 2, 1  # contype bits: arms touch the table and objects, not each other
+FENCE_TYPE = 4  # the fence touches objects only: the arms pass through it
+# An invisible fence round where the arms reach (table m: x0, x1, y0, y1; height, thickness). 2 Nov: a knocked tube
+# or a dropped ball kept rolling out of reach and the run was over; inside this every point is 12-45 cm from a base.
+FENCE = (-0.32, 0.32, 0.08, 0.42, 0.07, 0.01)
 
 PLA = (0.86, 0.30, 0.20, 1.0)  # the arms are printed red-orange
 SERVO = (0.07, 0.07, 0.08, 1.0)
@@ -54,7 +59,10 @@ BALL = (60, 225, 210)  # BGR
 SCENES = {
     "balls": [("ball 1", "ball", 0.067, BALL, -0.10, 0.22, 0.0), ("ball 2", "ball", 0.067, BALL, -0.17, 0.30, 0.0),
               ("ball 3", "ball", 0.067, BALL, -0.06, 0.31, 0.0),
-              ("tube", "tube", (0.078, 0.26), (30, 28, 26), 0.12, 0.36, 0.0)],
+              # 1 Nov: was 26 cm tall at (12, 36): out of the left arm's reach, at the right's limit, its top off the
+              # overhead image (SAM put it at y 45) and too tall to drop into but level, where a held ball slides
+              # 1-2 cm in the jaws. A 3-ball can, in the middle: the left arm drops balls in (2-3 of 3 in a row).
+              ("tube", "tube", (0.078, 0.21), (30, 28, 26), 0.04, 0.30, 0.0)],
     "brush": [("brush", "box", (0.20, 0.03, 0.025), (40, 140, 230), -0.08, 0.24, 10.0)],
     "blocks": [("red block", "box", (0.04, 0.04, 0.04), (50, 50, 210), -0.12, 0.22, 0.0),
                ("blue block", "box", (0.04, 0.04, 0.04), (210, 120, 40), 0.10, 0.26, 30.0)],
@@ -169,7 +177,7 @@ def arm_spec(wrist):
 
 def add_object(spec, i, name, kind, size, color, x, y, yaw):
     rgba = [color[2] / 255, color[1] / 255, color[0] / 255, 1.0]
-    common = dict(contype=WORLD_TYPE, conaffinity=WORLD_TYPE | ARM_TYPE, solref=[0.006, 1], group=0)
+    common = dict(contype=WORLD_TYPE, conaffinity=WORLD_TYPE | ARM_TYPE | FENCE_TYPE, solref=[0.006, 1], group=0)
     if kind == "ball":
         r = size / 2
         b = spec.worldbody.add_body(name=f"obj{i}", pos=[x, y, r], quat=yaw_quat(yaw))
@@ -212,6 +220,28 @@ def add_object(spec, i, name, kind, size, color, x, y, yaw):
     return b, (D, D, H)
 
 
+def scene_objects(objects):
+    """The objects of a scene: a name in SCENES, a scene file (.json, e.g. one watch/simscene.py made from a video),
+    or the list itself. A scene file: {"objects": [{"name", "kind": "ball" | "tube" | "box", "size_cm": [diameter] |
+    [outer diameter, height] | [L, W, H], "color": "#rrggbb", "xy_cm": [x, y], "yaw": deg}]}."""
+    if not isinstance(objects, str):
+        return objects
+    if objects in SCENES:
+        return SCENES[objects]
+    if not objects.endswith(".json"):
+        raise ValueError(f"no scene {objects!r}: one of {', '.join(SCENES)}, or a .json scene file")
+    import json
+
+    out = []
+    for o in json.load(open(objects))["objects"]:
+        size = [float(v) / 100 for v in o["size_cm"]]
+        c = str(o.get("color") or "#b4b4b4").lstrip("#")
+        bgr = (int(c[4:6], 16), int(c[2:4], 16), int(c[0:2], 16))
+        out.append((o["name"], o["kind"], size[0] if o["kind"] == "ball" else tuple(size), bgr,
+                    float(o["xy_cm"][0]) / 100, float(o["xy_cm"][1]) / 100, float(o.get("yaw", 0.0))))
+    return out
+
+
 def build(scene, objects="balls"):
     """The rig as a MuJoCo model: the table, both arms at their measured bases, the objects, the cameras and lights.
     Returns the model and the objects as (name, kind, size, colour, body name)."""
@@ -251,8 +281,15 @@ def build(scene, objects="balls"):
     for side in SIDES:
         B = scene.arms[side].base
         w.add_frame(pos=B[:3, 3], quat=quat(B[:3, :3])).attach_body(arm_spec(scene.wrist_cad).body("base"), side + "/", "")
+    x0, x1, y0, y1, fh, ft = FENCE
+    for k, (pos, half) in enumerate((([(x0 + x1) / 2, y0 - ft / 2, fh / 2], [(x1 - x0) / 2 + ft, ft / 2, fh / 2]),
+                                     ([(x0 + x1) / 2, y1 + ft / 2, fh / 2], [(x1 - x0) / 2 + ft, ft / 2, fh / 2]),
+                                     ([x0 - ft / 2, (y0 + y1) / 2, fh / 2], [ft / 2, (y1 - y0) / 2 + ft, fh / 2]),
+                                     ([x1 + ft / 2, (y0 + y1) / 2, fh / 2], [ft / 2, (y1 - y0) / 2 + ft, fh / 2]))):
+        w.add_geom(name=f"fence{k}", type=mujoco.mjtGeom.mjGEOM_BOX, size=half, pos=pos, group=3, rgba=[0, 0, 0, 0],
+                   contype=FENCE_TYPE, conaffinity=FENCE_TYPE)
     objs = []
-    for i, (name, kind, size, color, x, y, yaw) in enumerate(SCENES[objects] if isinstance(objects, str) else objects):
+    for i, (name, kind, size, color, x, y, yaw) in enumerate(scene_objects(objects)):
         body, extent = add_object(s, i, name, kind, size, color, x, y, yaw)
         body.add_freejoint()
         objs.append((name, kind, extent, tuple(color), f"obj{i}"))
@@ -337,7 +374,7 @@ def jittered(objects, cm, seed):
     """The scene's objects each moved up to cm in x and y (and turned), none closer than 1 cm to another: so a run is
     tested on a layout it wasn't tuned on."""
     rng = np.random.default_rng(seed)
-    objs = list(SCENES[objects] if isinstance(objects, str) else objects)
+    objs = list(scene_objects(objects))
     reach = [max(np.atleast_1d(o[2])[:2]) / 2 for o in objs]  # a rough radius per object
     for _ in range(200):
         out = [(n, k, s, c, x + rng.uniform(-cm, cm) / 100, y + rng.uniform(-cm, cm) / 100,
@@ -385,6 +422,8 @@ class MjWorld:
                         self.jaws[g] = (s, kind)
         self.friction = m.geom_friction[:, 0].copy()
         self.objects = [MjObject(self, i, *o) for i, o in enumerate(objs)]
+        # where each object started: reset() puts one back there
+        self.start = {o[0]: (o[4], o[5], o[6]) for o in scene_objects(objects)}
         self.geom_obj = {g: o.index for o in self.objects for g in o.geoms}
         self.grip_deg, self.grip_mm = self._grip_table()
         self.io = {}
@@ -542,6 +581,11 @@ class MjWorld:
             self.data.qvel[o.dadr:o.dadr + 6] = 0
             mujoco.mj_forward(self.model, self.data)
 
+    def reset(self, name):
+        """Put an object back where the scene started it, standing."""
+        x, y, yaw = self.start[name]
+        self.place(name, (x, y), yaw)
+
     def holder(self, o):
         return next(iter(o.held), None)
 
@@ -598,7 +642,7 @@ def free_camera(lookat=(0.0, 0.2, 0.06), distance=0.95, azimuth=90.0, elevation=
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--objects", default="balls", help=f"scene: {', '.join(SCENES)}")
+    ap.add_argument("--objects", default="balls", help=f"scene: {', '.join(SCENES)}, or a scene .json")
     ap.add_argument("--out", default="rig.png", help="where the still goes")
     ap.add_argument("--view", action="store_true", help="open MuJoCo's viewer on the rig instead")
     a = ap.parse_args()

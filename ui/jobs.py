@@ -2,6 +2,8 @@
 
     watch    Muse Spark watches the video and says what the hands did and which objects they touched
     segment  SAM 3.1 segments those objects and the hands      (both: python -m watch.sam_ego4d video, as a process)
+    scene    (python -m ui --sim) Muse rebuilds the video's objects for the simulator (watch/simscene.py) and robotd
+             restarts on that scene (ui/simulator.py)
     plan     what the brain gets: the description and Muse's reading of the video (and, after a hand-to-hand pass,
              who gives and who takes, from the score: watch/delegate.py)
     act      the brain (brain/loop.py) drives the arms through robotd one small step at a time, looking after each,
@@ -21,7 +23,7 @@ import time
 import uuid
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STAGES = ["watch", "segment", "plan", "act", "judge"]
+STAGES = ["watch", "segment", "scene", "plan", "act", "judge"]
 MAX_VIDEO_BYTES = 400 * 1024 * 1024
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
 
@@ -165,6 +167,25 @@ def watch_and_segment(job, run=run_watch):
              pass_seen=bool((score.get("quality") or {}).get("pass_seen")), giver=score.get("giver"),
              taker=score.get("taker"), files=files, held=score.get("held", ""))
     return score, folder
+
+
+# ---- scene (the simulator only) ------------------------------------------------------------------------------------
+def build_scene(job, folder, backend, rig):
+    """The video's objects as a simulator scene, and the simulator restarted on it."""
+    import base64
+
+    from harness import robot
+    from watch import simscene
+
+    job.enter("scene", "Muse is rebuilding the video's objects in the simulator")
+    path, scene = simscene.build(folder, backend, os.path.join(job.dir, "scene.json"))
+    job.emit("scene", objects=scene["objects"], notes=scene["notes"])
+    rig.start(path, log=lambda s: job.emit("log", text=s))
+    seen = robot.look(["overhead"])
+    shot = os.path.join(job.dir, "scene_overhead.jpg")
+    with open(shot, "wb") as f:
+        f.write(base64.b64decode(seen["images"]["overhead"]))
+    job.emit("scene_ready", url=job.url(shot))
 
 
 # ---- plan --------------------------------------------------------------------------------------------------------------
@@ -380,12 +401,13 @@ def judge_episode(job, sidecar, backend):
 
 # ---- the whole run -------------------------------------------------------------------------------------------------------
 class Runner:
-    def __init__(self, root, backend_factory=None, watch=run_watch, max_steps=None, record=True):
+    def __init__(self, root, backend_factory=None, watch=run_watch, max_steps=None, record=True, sim=None):
         self.root = root
         os.makedirs(root, exist_ok=True)
         self.backend_factory = backend_factory
         self.watch = watch
         self.max_steps = max_steps
+        self.sim = sim  # a SimRig (ui/simulator.py): rebuild each video's scene in it
         self.record = record
         self.current = None
         self.lock = threading.Lock()
@@ -433,9 +455,11 @@ class Runner:
 
     def _run(self, job):
         try:
-            score, _ = watch_and_segment(job, self.watch)
-            p = plan(job, score)
+            score, folder = watch_and_segment(job, self.watch)
             backend = self.backend()
+            if self.sim is not None:
+                build_scene(job, folder, backend, self.sim)
+            p = plan(job, score)
             out, sidecar = act(job, p, backend, self.max_steps, self.record)
             if sidecar and not job.stop_requested:
                 try:
