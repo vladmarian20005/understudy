@@ -27,6 +27,7 @@ SQUEEZE_MM = 6.0  # after a grasp the goal is this far inside the object, not fu
 END_MARGIN = 0.04  # long objects are held this far in from their end
 MEET_Z = 0.10  # m: where mid-air passes happen; lower and the arms crowd each other, higher and they can't back out
 PULL_OUT = 0.03  # m: after letting go, the fingers slide back off the object along the approach
+STEP_OFF = 0.006  # m: before that, the fixed finger steps this far off the object's face, toward the open jaw
 TAKE_HOVER = 0.05  # m: the taker waits this far above its grasp point, then closes in
 LONG = 2.5  # length / width ratio that makes an object "long": held at an end instead of the middle
 TOUCH_BELOW = 0.015  # m: a touch-down aims this far below where contact is expected
@@ -413,22 +414,45 @@ class Skills:
                 out.update(self.check_holding(s, "slip"))
         return out
 
-    def release(self, arm, set_down=True):
+    def release(self, arm, set_down=True, on_z=None):
+        """Let go of what arm holds. set_down: first lower it until it rests on what's under it, felt as contact,
+        so the numbers' heights needn't be right: the table, or on_z (m), the top of what it is set on (aimed just
+        under it). Then the open fingers slide back off along the fingers (rising to a steep pitch swung them through
+        what they had just set down). Returns set_cm: where the middle of what it held came to rest."""
         h = self.core.holding.get(arm)
         w = self.width(arm)
         opening = min(self.scene.stroke_mm, w + 30)
         tip = self.tool_T(arm, self.q()[arm])[:3, 3]
-        if set_down and h is not None:  # lower until the object's low end rests on the table, then open
+        out = {}
+        if set_down and h is not None:  # lower until the object's low end rests on something, then open
             low = float(np.min(held_corners(self.tool_T(arm, self.q()[arm]), h)[:, 2]))
-            self.touch_down(arm, [tip[0], tip[1], tip[2] - low - TOUCH_BELOW])
+            floor = 0.0 if on_z is None else float(on_z)
+            touched = self.touch_down(arm, [tip[0], tip[1], tip[2] - (low - floor) - TOUCH_BELOW])
+            at = (self.tool_T(arm, self.q()[arm]) @ h["rel"])[:3, 3]
+            out = dict(set_cm=[round(float(v) * 100, 1) for v in at], touched=touched is not None)
             self.play(Phase("let go", {arm: Goal(width=opening)}))
-            self.core.holding[arm] = None  # it rests on the table now: the way up mustn't carry it along
-            self.play(Phase("up", {arm: Goal(p=[tip[0], tip[1], max(tip[2], TRAVEL_Z)], pitch="steep", line=False)}))
+            self.core.holding[arm] = None  # it rests there now: the way out mustn't carry it along
         else:
             self.play(Phase("let go", {arm: Goal(width=opening)}))
-            self.pull_out(arm)
         self.core.holding[arm] = None
-        return {}
+        self.step_off(arm)
+        try:
+            self.pull_out(arm)
+        except Fail as e:  # close in front of a base the fingers can't slide back: straight up, as steep as reaches
+            if e.kind != "unreachable":
+                raise
+            self.play(Phase("up", {arm: Goal(p=[tip[0], tip[1], max(tip[2], TRAVEL_Z)], pitch="steep", line=False)}))
+        return out
+
+    def step_off(self, arm):
+        """Take the fixed finger off the face of what was just let go (the jaw swung away, the fixed finger still
+        touches it), toward the open jaw: sliding back along the face, it dragged things off (a cube set on another
+        came 5 cm back along the pull-out). Skipped where it can't."""
+        T = self.tool_T(arm, self.q()[arm])
+        try:
+            self.play(Phase("step off", {arm: Goal(p=T[:3, 3] - T[:3, 0] * STEP_OFF)}, speed="slow"))
+        except Fail:
+            pass
 
     def pull_out(self, arm):
         """Slide the open fingers back off the object along the approach, keeping the wrist's angle (steeper if the
