@@ -9,7 +9,6 @@ A **score** is what a human video says should happen; a **label** is what a robo
 | `source.kind` | camera | `frame` | what carries over to the arms |
 |---|---|---|---|
 | `ego4d` | a head-mounted camera that moves | `"ego"` | who gives, who takes, the order and the timing. Pixel positions are in a moving camera, so they don't map to the table: `target_cm` is `null`. |
-| `clip` (planned) | the rig's calibrated overhead camera (`harness/clip.py`) | `"overhead"` | all of the above, and positions in table cm (`target_cm`, `handover.at_cm`). |
 
 Left and right are the same for a person and the rig: the wearer's left hand is the left arm. In the overhead camera,
 the left arm is on the left of the image.
