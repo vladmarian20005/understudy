@@ -119,10 +119,10 @@ class Scripted:
                       function=dict(name=name, arguments=json.dumps(args))) for k, (name, args) in enumerate(step)]
         return Reply("", parse_calls(calls), dict(role="assistant", content="", tool_calls=calls), model=self.model)
 
-
     def ask(self, system, messages, effort=None):
+        """The next step as a plain answer: text as it is, anything else as JSON."""
         self.seen.append(list(messages))
-        step = self.steps.pop(0) if self.steps else "(script over)"
+        step = self.steps.pop(0) if self.steps else {"do": "done", "success": False, "summary": "script over"}
         text = step if isinstance(step, str) else json.dumps(step)
         return Reply(text, [], dict(role="assistant", content=text), model=self.model)
 
