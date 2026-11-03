@@ -16,7 +16,8 @@ import numpy as np
 from . import kin
 
 TICK = 0.02
-SPEEDS = {"slow": (0.04, 40.0), "normal": (0.10, 80.0), "fast": (0.18, 140.0)}  # fingertip m/s, joint and pitch deg/s
+# fingertip m/s, joint and pitch deg/s
+SPEEDS = {"very_slow": (0.015, 15.0), "slow": (0.04, 40.0), "normal": (0.10, 80.0), "fast": (0.18, 140.0)}
 GRIP_SPEED = 100.0  # mm/s
 MIN_PHASE = 0.3  # s
 MAX_JOINT_STEP = 6.0  # deg per tick: more means the IK jumped to another posture

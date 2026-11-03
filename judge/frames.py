@@ -45,10 +45,18 @@ def read(root, episode, indices, key=OVERHEAD):
     path, start, fps = video_file(root, episode_row(root, episode), key)
     ts = [start + i / fps for i in indices]
     tol = 1 / fps - 1e-4  # lerobot's own tolerance
+    def decode(**kw):
+        try:
+            return decode_video_frames(path, ts, tolerance_s=tol, return_uint8=True, **kw)
+        except TypeError:  # older lerobot: float frames only
+            return decode_video_frames(path, ts, tolerance_s=tol, **kw)
+
     try:
-        t = decode_video_frames(path, ts, tolerance_s=tol, return_uint8=True)
-    except TypeError:  # older lerobot: float frames only
-        t = decode_video_frames(path, ts, tolerance_s=tol)
+        t = decode()
+    except (RuntimeError, OSError):
+        # torchcodec installed but its FFmpeg libraries missing or too new (2 Nov, a Mac with Homebrew's FFmpeg:
+        # "Could not load libtorchcodec"): PyAV brings its own
+        t = decode(backend="pyav")
     arr = t.numpy()
     if arr.dtype != np.uint8:
         arr = (arr * 255).round().clip(0, 255).astype(np.uint8)

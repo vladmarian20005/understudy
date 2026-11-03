@@ -2,10 +2,12 @@
 
     watch    Muse Spark watches the video and says what the hands did and which objects they touched
     segment  SAM 3.1 segments those objects and the hands      (both: python -m watch.sam_ego4d video, as a process)
-    plan     what the brain gets: the description (else: do what the video shows), the video and Muse's reading of it
-             (and, after a hand-to-hand pass, who gives and who takes, from the score: watch/delegate.py)
-    act      the brain (brain/plan.py) looks, plans once, runs the steps on the arms through robotd and checks where it
-             matters, recorded as an episode; every answer, step and image is an event
+    scene    (python -m ui --sim) Muse rebuilds the video's objects for the simulator (watch/simscene.py) and robotd
+             restarts on that scene (ui/simulator.py)
+    plan     what the brain gets: the description and Muse's reading of the video (and, after a hand-to-hand pass,
+             who gives and who takes, from the score: watch/delegate.py)
+    act      the brain (brain/loop.py) drives the arms through robotd one small step at a time, looking after each,
+             recorded as an episode; every answer, action and image is an event
     judge    the judge looks at the recorded episode and gives its verdict; robotd decides whether it trains
 
 Every step reports events (job.emit), kept in ui_runs/<id>/events.jsonl, so the page can follow a run live or replay
@@ -21,7 +23,7 @@ import time
 import uuid
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STAGES = ["watch", "segment", "plan", "act", "judge"]
+STAGES = ["watch", "segment", "scene", "plan", "act", "judge"]
 MAX_VIDEO_BYTES = 400 * 1024 * 1024
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
 
@@ -167,11 +169,29 @@ def watch_and_segment(job, run=run_watch):
     return score, folder
 
 
+# ---- scene (the simulator only) ------------------------------------------------------------------------------------
+def build_scene(job, folder, backend, rig):
+    """The video's objects as a simulator scene, and the simulator restarted on it."""
+    import base64
+
+    from harness import robot
+    from watch import simscene
+
+    job.enter("scene", "Muse is rebuilding the video's objects in the simulator")
+    path, scene = simscene.build(folder, backend, os.path.join(job.dir, "scene.json"))
+    job.emit("scene", objects=scene["objects"], notes=scene["notes"])
+    rig.start(path, log=lambda s: job.emit("log", text=s))
+    seen = robot.look(["overhead"])
+    shot = os.path.join(job.dir, "scene_overhead.jpg")
+    with open(shot, "wb") as f:
+        f.write(base64.b64decode(seen["images"]["overhead"]))
+    job.emit("scene_ready", url=job.url(shot))
+
+
 # ---- plan --------------------------------------------------------------------------------------------------------------
-def plan(job, score, folder=None):
-    """What the brain is given: the person's description (else: do what the video shows), the video itself (the
-    brain's planner reads Muse's summary of it and sees frames from it), and after a hand-to-hand pass who gives and
-    who takes, from the score (watch/delegate.py)."""
+def plan(job, score):
+    """What the brain is given: the person's description, Muse's summary of the video, and after a hand-to-hand pass
+    who gives and who takes, from the score (watch/delegate.py)."""
     from watch import delegate
 
     job.enter("plan", "Turning the video into a task for the arms")
@@ -188,11 +208,10 @@ def plan(job, score, folder=None):
     task = description
     if description and passed:
         task += f" (In the video the object went from the {giver} hand to the {taker} hand.)"
-    clip = os.path.join(folder, "clip.mp4") if folder else None
     job.emit("plan", task=task or "Do with the two arms what the person in the video does.", video_summary=summary,
              target=target, giver=giver if passed else None, taker=taker if passed else None)
-    return dict(task=task, target=target, giver=giver if passed else None, taker=taker if passed else None,
-                score=score, video=clip if clip and os.path.exists(clip) else None, objects=muse.get("objects") or [])
+    return dict(task=task, summary=summary, target=target, giver=giver if passed else None,
+                taker=taker if passed else None, score=score, objects=muse.get("objects") or [])
 
 
 # ---- act -----------------------------------------------------------------------------------------------------------------
@@ -210,118 +229,98 @@ def on_table(wanted, found):
     return [w for w in wanted if any(same(w, f) for f in found)]
 
 
+def num(v):
+    return f"{v:g}" if isinstance(v, (int, float)) else str(v)
+
+
 def action_text(a):
-    a = a or {}
-    do = a.get("do", "?")
-    xyz = lambda v: "(" + ", ".join(f"{float(x):g}" for x in v) + ")"
-    if do == "grasp":
-        return f"grasps the {a.get('object', '?')}"
+    """One of Muse's actions, in words."""
+    do, arm = a.get("do", "?"), str(a.get("arm", "")).title()
+    if do == "find":
+        return "Find " + ", ".join(str(t) for t in a.get("things") or ["(nothing)"])
     if do == "move":
-        if a.get("above"):
-            return f"moves above the {a['above']}" + (f" by {a['by']:g} cm" if isinstance(a.get("by"), (int, float)) else "")
-        if a.get("to"):
-            return f"moves to {xyz(a['to'])}"
-        if a.get("rel"):
-            return f"shifts by {xyz(a['rel'])}"
-        return "moves"
-    if do == "tilt":
-        return f"tilts {a.get('deg', 0):g}°"
-    if do == "nudge":
-        bits = [f"{k} {a[k]:g}" for k in ("forward", "right", "up") if isinstance(a.get(k), (int, float)) and a[k]]
-        return "nudges " + (", ".join(bits) or "a little")
-    return {"open": "lets go", "grip": "grips", "park": "parks out of view"}.get(do, do)
-
-
-def step_text(step):
-    arms = [f"{side.title()} {action_text(step[side])}" for side in ("left", "right") if step.get(side)]
-    return " · ".join(arms) or "nothing"
+        bits = [f"{k} {num(a[k])}" for k in ("forward", "right", "up") if isinstance(a.get(k), (int, float)) and a[k]]
+        return f"{arm} moves " + (", ".join(bits) + " cm" if bits else "a little")
+    if do == "move_to":
+        return f"{arm} moves to (" + ", ".join(num(a.get(k, "?")) for k in "xyz") + ")"
+    if do == "pitch":
+        return f"{arm} tilts to {num(a.get('deg', 0))}°"
+    if do == "roll":
+        return f"{arm} rolls {num(a.get('deg', 0))}°"
+    if do == "open":
+        return f"{arm} opens to {num(a.get('mm', 98))} mm"
+    if do == "close":
+        return f"{arm} closes" + (" gently" if a.get("gentle") else "")
+    if do == "home":
+        return f"{arm} goes home"
+    return f"{arm} {do}".strip()
 
 
 def say(out):
-    """One of Muse's JSON answers, as what it'd say."""
-    if "find" in out:
-        return "Looking on the table for: " + ", ".join(out["find"] or ["(nothing)"]) + "."
-    if "steps" in out:
-        lines = [out.get("understanding", "").strip(), ""]
-        lines += [f"{k}. {step_text(st)}" + (f" — check: {st['check']}" if st.get("check") else "")
-                  for k, st in enumerate(out.get("steps") or [], 1)]
-        if out.get("done_when"):
-            lines += ["", f"Done when: {out['done_when']}"]
-        return "\n".join(lines).strip()
-    text = ("Looks right. " if out.get("ok") else "Not right yet. ") + str(out.get("why", "")).strip()
-    if out.get("done"):
-        text += f"\n{'Finished' if out['done'].get('success') else 'Giving up'}: {out['done'].get('summary', '')}"
-    elif out.get("next"):
-        text += "\n" + ("Re-planning: " if out.get("replace_rest") else "First: ") + \
-            "; ".join(step_text(st) for st in out["next"])
-    return text
+    """One of Muse's JSON answers, as what it'd say: what it sees, its plan, and what it does next."""
+    lines = [str(out.get(k) or "").strip() for k in ("see", "plan")]
+    if out.get("do") == "done":
+        lines.append(f"{'Finished' if out.get('success') else 'Giving up'}: {out.get('summary', '')}")
+    else:
+        lines.append(f"Next: {action_text(out)}")
+    return "\n".join(line for line in lines if line)
 
 
 def narrated_run(job, backend, run_dir, wanted):
-    """brain.plan.Run, with every answer from Muse, every step and every image as an event."""
-    from brain import plan as planner
-    from brain import tools
-    from harness import robot
+    """brain.loop.Run, with every answer from Muse, every action and every image as an event."""
+    from brain import loop
 
-    class Narrated(planner.Run):
+    class Narrated(loop.Run):
         def __init__(self):
-            super().__init__(backend, log=self.on_log, run_dir=run_dir)
-            self.pending, self.looks = [], 0
+            super().__init__(backend, log=lambda line: job.emit("log", text=line), run_dir=run_dir)
+            self.pending, self.checked = [], not wanted
 
-        def on_log(self, line):
-            job.emit("log", text=line)
+        def save_images(self, images, n):
+            super().save_images(images, n)
+            self.pending = [(cam, os.path.join(run_dir, f"{n:02d}_{cam}.jpg")) for cam in images]
 
-        def look(self, sides=(), tag=None):
-            self.looks += 1
-            tag = tag or f"look{self.looks:02d}"
-            seen = super().look(sides, tag)
-            self.pending += [(cam, os.path.join(run_dir, f"{tag}_{cam}.jpg")) for cam in seen.get("images", {})]
-            return seen
-
-        def ask(self, content, effort=None, keep_images=1):
+        def ask(self, content):
             if job.stop_requested:
                 raise Stopped()
-            if any(isinstance(p, dict) and p.get("text") == planner.PLAN_ASK for p in content):
-                found = [o.get("kind") or o["name"] for o in tools._memory["objects"]]
-                if wanted and not on_table(wanted, found):  # nothing from the video is there: don't flail
-                    raise StageError(f"The robot's table has none of what the video shows ({', '.join(wanted)}): "
-                                     f"SAM found {', '.join(found) or 'nothing'}. {SIM_HINT}")
             if hasattr(self.llm, "last_reasoning"):
                 self.llm.last_reasoning = None
             t0, before = time.time(), dict(self.stats)
-            out = super().ask(content, effort, keep_images)
-            job.emit("thought", turn=self.calls, text=say(out), reasoning=getattr(self.llm, "last_reasoning", None),
-                     calls=["done"] if out.get("done") else [], seconds=round(time.time() - t0, 1),
+            out = super().ask(content)
+            turn = self.stats["calls"]
+            job.emit("thought", turn=turn, text=say(out), reasoning=getattr(self.llm, "last_reasoning", None),
+                     calls=["done"] if out.get("do") == "done" else [], seconds=round(time.time() - t0, 1),
                      tokens_in=self.stats["tokens_in"] - before["tokens_in"],
                      tokens_out=self.stats["tokens_out"] - before["tokens_out"])
             for cam, path in self.pending:
                 if os.path.exists(path):
-                    job.emit("seen", turn=self.calls, camera=cam, url=job.url(path))
+                    job.emit("seen", turn=turn, camera=cam, url=job.url(path))
             self.pending = []
             return out
 
-        def starting(self, n, step):
+        def act(self, a, seen):
             if job.stop_requested:
-                robot.stop("stopped from the dashboard")
-            job.emit("call", name=f"{n}. {step_text(step)}", args=None, step=step)
-
-        def save(self, **rec):
-            super().save(**rec)
-            if "step" in rec:
-                res = rec.get("results") or {}
-                failed = [f"{side}: {r['failed']}" for side, r in res.items() if isinstance(r, dict) and "failed" in r]
-                job.emit("result", outcome="failed" if failed else "done", why="; ".join(failed) or None,
-                         results=res, seconds=rec.get("seconds"))
+                raise Stopped()
+            job.emit("call", name=action_text(a), args=None, step=a)
+            t0 = time.time()
+            out = super().act(a, seen)
+            if a.get("do") == "find" and not self.checked:  # nothing from the video is there: don't flail
+                self.checked = True
+                found = [o["word"] for o in self.things]
+                if not on_table(wanted, found):
+                    raise StageError(f"The robot's table has none of what the video shows ({', '.join(wanted)}): "
+                                     f"SAM found {', '.join(dict.fromkeys(found)) or 'nothing'}. {SIM_HINT}")
+            job.emit("result", outcome=out.get("outcome"), why=out.get("why"), results=out,
+                     seconds=round(time.time() - t0, 1))
+            return out
 
     return Narrated()
 
 
 def act(job, p, backend, max_steps=None, record=True):
-    from brain import plan as planner
-    from brain import tools
+    from brain import loop
     from harness import robot
 
-    job.enter("act", "Muse Spark plans, the arms act, Muse checks")
+    job.enter("act", "Muse Spark drives the arms one small step at a time")
     try:
         st = robot.status()
     except robot.RobotdDown:
@@ -343,14 +342,14 @@ def act(job, p, backend, max_steps=None, record=True):
         else:
             job.emit("warning", text="not recorded: " + "; ".join(begin.get("errors", [])))
     run = narrated_run(job, backend, os.path.join(job.dir, "brain"), p.get("objects") or [])
+    task = loop.video_task(p["task"], p["summary"]) if p.get("summary") else p["task"]
     out, t0 = None, time.time()
     try:
         try:
-            out = run.go(p["task"], p.get("video"), max_steps or planner.MAX_STEPS)
+            out = run.go(task, max_steps or loop.MAX_TURNS)
         except robot.RobotdDown as e:
             out = run.end(False, f"robotd stopped answering: {e}", t0)
     finally:
-        tools.FIND = []  # the planner's SAM names stay set otherwise: the next look in this process would use them
         if ep is not None:
             ok = bool(out and out["success"])
             note = None if ok else f"the brain says: {out['summary'] if out else 'the run stopped'}"
@@ -402,12 +401,13 @@ def judge_episode(job, sidecar, backend):
 
 # ---- the whole run -------------------------------------------------------------------------------------------------------
 class Runner:
-    def __init__(self, root, backend_factory=None, watch=run_watch, max_steps=None, record=True):
+    def __init__(self, root, backend_factory=None, watch=run_watch, max_steps=None, record=True, sim=None):
         self.root = root
         os.makedirs(root, exist_ok=True)
         self.backend_factory = backend_factory
         self.watch = watch
         self.max_steps = max_steps
+        self.sim = sim  # a SimRig (ui/simulator.py): rebuild each video's scene in it
         self.record = record
         self.current = None
         self.lock = threading.Lock()
@@ -456,8 +456,10 @@ class Runner:
     def _run(self, job):
         try:
             score, folder = watch_and_segment(job, self.watch)
-            p = plan(job, score, folder)
             backend = self.backend()
+            if self.sim is not None:
+                build_scene(job, folder, backend, self.sim)
+            p = plan(job, score)
             out, sidecar = act(job, p, backend, self.max_steps, self.record)
             if sidecar and not job.stop_requested:
                 try:

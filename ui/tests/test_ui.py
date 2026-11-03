@@ -1,5 +1,5 @@
 """The dashboard: a run from upload to the end against the simulator (with stand-ins for the SAM pipeline, the brain's
-SAM and Muse), what the planner's answers and steps become as events, the task it's given, stopping when the table
+SAM and Muse), what Muse's answers and actions become as events, the task it's given, stopping when the table
 lacks the video's objects, reasoning caught from the API, and the HTTP side: upload, the event stream, files, the
 cameras."""
 import json
@@ -41,20 +41,17 @@ def job(tmp_path, task):
     return jobs.Job(str(tmp_path), "v.mp4", task)
 
 
-def test_the_description_is_the_task_with_the_video_beside_it(tmp_path):
-    folder = tmp_path / "sam"
-    folder.mkdir()
-    (folder / "clip.mp4").write_bytes(b"\0")
-    p = jobs.plan(job(tmp_path, "Hand the brush to the right arm."), SCORE, str(folder))
+def test_the_description_is_the_task_with_what_the_video_shows_beside_it(tmp_path):
+    p = jobs.plan(job(tmp_path, "Hand the brush to the right arm."), SCORE)
     assert p["task"] == "Hand the brush to the right arm. (In the video the object went from the left hand to the right hand.)"
-    assert p["video"] == str(folder / "clip.mp4") and p["objects"] == ["paintbrush"]
+    assert p["summary"] == "left hand passes the paintbrush to the right hand" and p["objects"] == ["paintbrush"]
     assert p["target"] == [12.0, 24.0] and p["giver"] == "left" and p["taker"] == "right"
 
 
 def test_without_a_description_the_brain_does_what_the_video_shows_and_with_neither_it_stops(tmp_path):
     no_pass = dict(SCORE, quality={"pass_seen": False}, giver=None, taker=None)
     p = jobs.plan(job(tmp_path, ""), no_pass)
-    assert p["task"] == "" and p["video"] is None and p["target"] is None  # brain/plan.py words it from the video
+    assert p["task"] == "" and p["summary"] and p["target"] is None  # the brain goes by Muse's summary of the video
     with pytest.raises(jobs.StageError, match="no description"):
         jobs.plan(job(tmp_path, ""), dict(no_pass, source={"kind": "video"}))
 
@@ -66,15 +63,12 @@ def test_the_videos_objects_are_matched_to_the_tables_loosely():
 
 
 def test_muses_answers_read_as_words():
-    plan = {"understanding": "Put each ball in the tube.", "steps": [
-        {"left": {"do": "grasp", "object": "ball 1"}, "right": {"do": "park"}, "check": "left holds ball 1"},
-        {"left": {"do": "move", "above": "tube", "by": 3}}], "done_when": "all balls in the tube"}
-    text = jobs.say(plan)
-    assert text.startswith("Put each ball in the tube.\n\n1. Left grasps the ball 1 · Right parks out of view")
-    assert "check: left holds ball 1" in text and "2. Left moves above the tube by 3 cm" in text
-    assert jobs.say({"find": ["ball", "tube"]}) == "Looking on the table for: ball, tube."
-    assert jobs.say({"ok": False, "why": "it slipped", "next": [{"left": {"do": "open"}}]}) == \
-        "Not right yet. it slipped\nFirst: Left lets go"
+    step = {"see": "The ball is 3 cm ahead.", "plan": "go in, then close", "arm": "left", "do": "move", "forward": 3}
+    assert jobs.say(step) == "The ball is 3 cm ahead.\ngo in, then close\nNext: Left moves forward 3 cm"
+    assert jobs.action_text({"do": "find", "things": ["ball", "tube"]}) == "Find ball, tube"
+    assert jobs.action_text({"arm": "right", "do": "move_to", "x": -3, "y": 25, "z": 13}) == "Right moves to (-3, 25, 13)"
+    assert jobs.action_text({"arm": "right", "do": "close", "gentle": True}) == "Right closes gently"
+    assert jobs.say({"do": "done", "success": False, "summary": "the ball rolled off"}) == "Giving up: the ball rolled off"
 
 
 # ---- reasoning, narrated replies --------------------------------------------------------------------------------------
@@ -146,7 +140,7 @@ def colour_sam(monkeypatch):
 
 
 def planner(answers):
-    """A scripted Muse for brain/plan.py: its JSON answers in order, each with a bit of reasoning."""
+    """A scripted Muse for brain/loop.py: its JSON answers in order, each with a bit of reasoning."""
     state = {"n": 0}
 
     def ask(system, messages, effort=None):
@@ -159,11 +153,12 @@ def planner(answers):
     return backend
 
 
-GRIP_PLAN = [{"find": ["brush"]},
-             {"understanding": "Grip the brush with the left arm.",
-              "steps": [{"left": {"do": "grasp", "object": "brush"}, "check": "the left arm holds the brush"}],
-              "done_when": "the left arm holds the brush"},
-             {"ok": True, "why": "the brush is in the left jaws", "done": {"success": True, "summary": "gripped it"}}]
+GRIP_PLAN = [{"see": "A brush lies on the table.", "plan": "find it, then open the left jaws",
+              "do": "find", "things": ["brush"]},
+             {"see": "The brush is in front of the left arm.", "plan": "open the left jaws for it",
+              "arm": "left", "do": "open", "mm": 60},
+             {"see": "The left jaws are open.", "plan": "", "do": "done", "success": True,
+              "summary": "opened for the brush"}]
 
 
 def wait(j, s=120):
@@ -185,13 +180,13 @@ def test_a_run_goes_from_upload_to_the_end_as_events(sim, colour_sam, tmp_path):
             "acted", "note", "end"} <= set(kinds)
     thoughts = [e for e in j.events if e["kind"] == "thought"]
     assert [t["text"].split("\n")[0] for t in thoughts] == [
-        "Looking on the table for: brush.", "Grip the brush with the left arm.",
-        "Looks right. the brush is in the left jaws"]
+        "A brush lies on the table.", "The brush is in front of the left arm.", "The left jaws are open."]
+    assert thoughts[0]["text"].endswith("Next: Find brush") and thoughts[2]["text"].endswith("Finished: opened for the brush")
     assert thoughts[1]["reasoning"] == "thinking about answer 2" and thoughts[2]["calls"] == ["done"]
-    assert [e["name"] for e in j.events if e["kind"] == "call"] == ["1. Left grasps the brush"]
-    assert [e["outcome"] for e in j.events if e["kind"] == "result"] in (["done"], ["failed"])
+    assert [e["name"] for e in j.events if e["kind"] == "call"] == ["Find brush", "Left opens to 60 mm"]
+    assert [e["outcome"] for e in j.events if e["kind"] == "result"] == ["done", "done"]
     acted = next(e for e in j.events if e["kind"] == "acted")
-    assert acted["success"] and acted["steps"] == 1 and acted["turns"] == 3
+    assert acted["success"] and acted["steps"] == 2 and acted["turns"] == 3
     seg = next(e for e in j.events if e["kind"] == "segmented")
     assert seg["pass_seen"] and seg["files"]["preview.mp4"].endswith("/files/sam/videos/upload/preview.mp4")
     # what Muse looked at is shown under the answer it gave
@@ -200,6 +195,30 @@ def test_a_run_goes_from_upload_to_the_end_as_events(sim, colour_sam, tmp_path):
     again = jobs.Job.load(str(tmp_path), j.id)
     assert [e["kind"] for e in again.events] == kinds and again.status == "done"
     assert runner.history()[0]["id"] == j.id
+
+
+def test_with_the_simulator_the_videos_objects_are_rebuilt_before_planning(sim, colour_sam, tmp_path, monkeypatch):
+    from watch import simscene
+
+    monkeypatch.setattr(simscene, "describe", lambda summary, named, clip, llm: simscene.clean(
+        [{"name": "paintbrush", "kind": "box", "size_cm": [20, 3, 2.5], "color": "#e68c28", "count": 1, "hand": "left"}]))
+    started = []
+
+    class Rig:  # the test's robotd is already running: note the scene it would restart on
+        def start(self, path, log=lambda s: None):
+            started.append(json.load(open(path)))
+
+    runner = jobs.Runner(str(tmp_path), backend_factory=lambda: planner(GRIP_PLAN), watch=fake_watch, record=False,
+                         sim=Rig())
+    j = runner.start(b"\0", "brush.mp4", "Grip the brush.")
+    wait(j)
+    assert j.status == "done", [e for e in j.events if e["kind"] == "error"]
+    assert [e["stage"] for e in j.events if e["kind"] == "stage"] == ["watch", "segment", "scene", "plan", "act"]
+    scene = next(e for e in j.events if e["kind"] == "scene")
+    assert [o["name"] for o in scene["objects"]] == ["paintbrush"] and scene["objects"][0]["xy_cm"][0] < 0
+    assert started[0]["objects"] == scene["objects"]
+    ready = next(e for e in j.events if e["kind"] == "scene_ready")
+    assert ready["url"].endswith("/files/scene_overhead.jpg") and os.path.getsize(os.path.join(j.dir, "scene_overhead.jpg"))
 
 
 def test_a_table_without_the_videos_objects_stops_before_planning(sim, colour_sam, tmp_path):
@@ -211,7 +230,7 @@ def test_a_table_without_the_videos_objects_stops_before_planning(sim, colour_sa
     error = next(e["text"] for e in j.events if e["kind"] == "error")
     assert "none of what the video shows (tube, ball)" in error and "SAM found brush" in error
     assert "--hd --objects balls" in error
-    assert not [e for e in j.events if e["kind"] == "call"]  # no step ran
+    assert [e["name"] for e in j.events if e["kind"] == "call"] == ["Find brush"]  # nothing moved
 
 
 def test_without_robotd_the_run_stops_at_act_with_a_reason(tmp_path, monkeypatch):

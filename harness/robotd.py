@@ -71,6 +71,9 @@ class SimCameras:
         return {n: dict(ok=True, fps=30.0, age_s=0.0) for n in CAMERAS}
 
 
+RESET_REACH_CM = (12.0, 45.0)  # an arm reaches a thing this far from its base, on the table
+
+
 class Core:
     def __init__(self, sim_mode=True, speed=1.0, objects="brush", noise=0.0, arm=True, quiet=False,
                  dataset="understudy", datasets=DATASETS, vision=False, stream_cameras=False, sag=True,
@@ -138,7 +141,8 @@ class Core:
         leaders = {}
         for s, cfg in self.scene.leaders.items():
             try:
-                leaders[s] = LeaderIO(cfg["port"], cfg["calibration"], self.scene.stroke_mm)
+                leaders[s] = LeaderIO(cfg["port"], cfg["calibration"], self.scene.stroke_mm,
+                                      roll_deg=cfg.get("roll_deg", 0.0))
             except Exception as e:
                 self.event(f"no {s} leader ({e}): taking over the {s} arm by hand is off", "warn")
         return leaders
@@ -176,6 +180,44 @@ class Core:
             return [e for e in self.events if e["id"] > since]
 
     # ---- state ----------------------------------------------------------------------------------------------------
+    def sim_reset(self, req):
+        """Put an object back where the scene started it, standing, but only when the arms can't recover it where and
+        how it really is: knocked over (not a ball), off the table, or farther than RESET_REACH_CM from both bases.
+        The brain may not use it to undo a mistake an arm could fix. name: the object; kind and near_cm (its last seen centre) pick among same-kind ones when the
+        brain's name for it isn't the simulator's."""
+        if not self.sim or not hasattr(self.world, "reset"):
+            return dict(ok=False, errors=["reset is only in the HD simulator: on the real table a person puts it back"])
+        objs = [o for o in self.world.objects if not self.world.holder(o)]
+        name, kind = str(req.get("name") or ""), str(req.get("kind") or "")
+        same = [o for o in objs if o.name == name] or [o for o in objs if kind and
+                                                       (o.name == kind or o.name.rstrip("0123456789 ") == kind)]
+        if not same and req.get("near_cm"):  # neither name known here: the free thing nearest where it was seen
+            same = sorted(objs, key=lambda o: np.linalg.norm(o.pos[:2] * 100 - np.array(req["near_cm"][:2], float)))[:1]
+        if not same:
+            return dict(ok=False, errors=[f"no free object {name!r} in the simulator"])
+        near = req.get("near_cm")
+        o = min(same, key=lambda o: np.linalg.norm(o.pos[:2] * 100 - np.array(near[:2], dtype=float))) if near \
+            else same[0]
+        xy = o.pos[:2]
+        dist = {s: float(np.linalg.norm(xy - self.scene.base_xy(s)) * 100) for s in SIDES}
+        on_table = self.scene.on_table(xy) and o.pos[2] > -0.01
+        reach = [s for s, d in dist.items() if RESET_REACH_CM[0] <= d <= RESET_REACH_CM[1]]
+        where = f"({xy[0] * 100:.0f}, {xy[1] * 100:.0f}) cm, " + ", ".join(f"{d:.0f} cm from the {s} base"
+                                                                            for s, d in dist.items())
+        # knocked over: its own up leans more than 45 deg from the table's (a ball has no up)
+        tilt = float(np.degrees(np.arccos(np.clip(o.R[2, 2], -1.0, 1.0))))
+        tipped = o.kind != "ball" and tilt > 45
+        if on_table and reach and not tipped:
+            return dict(ok=False, errors=[f"not reset: {o.name} is at {where}, standing ({tilt:.0f} deg from upright), "
+                                          f"within the {' and '.join(reach)} arm's reach: handle it with the arms"],
+                        where=where)
+        if tipped:
+            where += f", lying {tilt:.0f} deg from upright"
+        self.world.reset(o.name)
+        x, y, _ = self.world.start[o.name]
+        self.event(f"reset {o.name}: it was at {where}" + ("" if on_table else ", off the table"), "warn")
+        return dict(ok=True, object=o.name, was=where, now_cm=[round(x * 100, 1), round(y * 100, 1)])
+
     def arms_state(self):
         snap = self.ctl.snapshot()
         out = {}
@@ -269,6 +311,8 @@ class Core:
                 return dict(ok=False, errors=["arm is left or right"])
             self.ctl.grip_force(req["arm"], float(req.get("pct", 30)))
             return dict(ok=True)
+        if cmd == "sim_reset":  # the simulator only: a thing no arm can reach any more, back where it started
+            return self.sim_reset(req)
         if cmd == "hold":  # what a gripper holds, as it stood on the table (none: nothing): it moves with the gripper
             side = req.get("arm")
             if side not in SIDES:
@@ -406,7 +450,7 @@ def main():
     ap.add_argument("--speed", type=float, default=1.0, help="simulator speed (1 = real time, 0 = flat out)")
     ap.add_argument("--hd", action="store_true",
                     help="simulator: the MuJoCo one (harness/mjsim.py): CAD arms, original gripper, physics, renders")
-    ap.add_argument("--objects", default="brush", help=f"simulator scene: {', '.join(sim.SCENES)} (--hd also balls)")
+    ap.add_argument("--objects", default="brush", help=f"simulator scene: {', '.join(sim.SCENES)} (--hd also balls, or a scene .json)")
     ap.add_argument("--noise", type=float, default=0.0, help="simulated perception error, cm")
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--dataset", default="understudy", help="episodes go to datasets/<name>")

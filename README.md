@@ -1,7 +1,8 @@
 # Understudy
 
-Show two robot arms a task, in words or in a video of a person doing it. Muse Spark plans it, SAM 3.1 finds the things
-on the table, and every motion is checked before it moves. Each run can be recorded and trained into an ACT policy.
+Show two robot arms a task, in words or in a video of a person doing it. Muse Spark drives the arms one small step at a
+time and looks after every step, SAM 3.1 finds the things on the table, and every motion is checked before it moves.
+Each run can be recorded and trained into an ACT policy.
 
 Our entry to Meta's Global AI Developer Hackathon 2026 (Vlad Marian, Andrei Voinea).
 
@@ -36,16 +37,20 @@ Space stops the arms. `./understudy.sh check` says whether everything is ready.
 
 ## How it works
 
-1. **Look.** Muse names what the task involves and SAM finds those things in the overhead image, in table cm.
-2. **Plan.** One Muse call turns the task, the table and what the arms can reach into a list of steps.
-3. **Act.** The steps run with no model calls in between. robotd checks each motion first.
-4. **Check.** After a step that asks for it, or one that failed, Muse looks at fresh images and goes on, re-plans or stops.
+1. **Look.** Every turn Muse gets the overhead image with a cm grid and both grippers drawn on, both wrist images with
+   the fingertips and the grip point drawn on, and the arms' numbers.
+2. **Act.** It answers with one small action for one arm: a step in the gripper's own directions, a move to a table
+   point, a tilt or a wrist roll, open, close (until the jaws meet a load), home, or find (SAM 3.1 on the overhead
+   image, in table cm). robotd checks every motion before it moves.
+3. **Guard.** Rules in the loop refuse what failed on the real arms: closing before a thing is deep in the jaws,
+   letting go before what it holds is over the opening, tilting a held container, the arms crowding each other.
+4. **Again**, until Muse says the task is done.
 
-No task lives in the code. To change the rig, change `harness/scene.json`; to change the model, set `LLM=` (`brain/llm.py`).
+To change the rig, change `harness/scene.json`; to change the model, set `LLM=` (`brain/llm.py`).
 
 | Folder | What it does |
 |---|---|
-| `brain/` | the Muse loop: `plan.py` the loop, `prompt.py` everything Muse is told, `act.py` the arms' actions, `tools.py` what it sees and remembers, `reach.py`, `wrist.py`, `sam.py`, `video.py`, `llm.py` |
+| `brain/` | the Muse loop: `loop.py` the loop, everything Muse is told and the rules, `see.py` the images it gets and what SAM finds, `sam.py`, `llm.py` |
 | `harness/` | `robotd` (the only process on the servos): kinematics, checked motion, the 50 Hz controller, the sims, the recorder, the policy runner, training, calibration |
 | `watch/` | a video of a person into a score, with SAM 3.1 and Muse |
 | `judge/` | Muse's verdict on recorded episodes |
@@ -55,12 +60,9 @@ No task lives in the code. To change the rig, change `harness/scene.json`; to ch
 ## Train a policy
 
 ```bash
-python -m brain "<task>" --plan-only --save-plan plans/mine.json
-python -m brain.rehearse plans/mine.json ...        # replays the plan and records episodes; its docstring has the options
+python -m brain "<task>" --record                   # the run is an episode in robotd's --dataset, labelled with it
 python -m harness.train <dataset>
 ```
-
-`brain.rehearse` currently judges success by whether objects ended stacked (`--on`).
 
 ## Safety
 

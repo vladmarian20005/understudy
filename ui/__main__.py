@@ -26,14 +26,22 @@ def main():
     ap.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to open it from another computer on the network")
     ap.add_argument("--no-browser", action="store_true")
     ap.add_argument("--runs", default=os.path.join(HERE, "ui_runs"), help="where runs are kept")
-    ap.add_argument("--max-steps", type=int, help="the most plan steps per run (default: brain/plan.py's)")
+    ap.add_argument("--max-steps", type=int, help="the most steps per run (default: brain/loop.py's)")
+    ap.add_argument("--sim", action="store_true",
+                    help="run the HD simulator here, rebuilt for each video from its objects (don't start robotd)")
     ap.add_argument("--no-record", action="store_true", help="don't record runs as episodes (and so don't judge them)")
     a = ap.parse_args()
 
     from brain import llm
     llm.load_env()  # MODEL_API_KEY for the brain, the judge and (inherited) the SAM pipeline
+    rig = None
+    if a.sim:
+        from .simulator import SimRig
+        rig = SimRig(a.runs)
+        print("[ui] starting the simulator (an empty table until a video gives it a scene)...", flush=True)
+        rig.start()
     live = Live()
-    runner = Runner(a.runs, max_steps=a.max_steps, record=not a.no_record)
+    runner = Runner(a.runs, max_steps=a.max_steps, record=not a.no_record, sim=rig)
     httpd = serve(live, runner, a.host, a.port)
     url = f"http://{'127.0.0.1' if a.host in ('0.0.0.0', '') else a.host}:{a.port}"
     print(f"[ui] mission control on {url}  (Ctrl+C stops it)", flush=True)
@@ -46,6 +54,8 @@ def main():
     finally:
         live.close()
         httpd.server_close()
+        if rig is not None:
+            rig.stop()
 
 
 if __name__ == "__main__":

@@ -343,11 +343,13 @@
   "leaders": {
     "left": {
       "port": "/dev/tty.usbmodem5A7A0590781",
-      "calibration": "leader_left"
+      "calibration": "leader_left",
+      "roll_deg": 90
     },
     "right": {
       "port": "/dev/tty.usbmodem5A7A0576101",
-      "calibration": "leader_right"
+      "calibration": "leader_right",
+      "roll_deg": 90
     }
   }
 }

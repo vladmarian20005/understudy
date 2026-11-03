@@ -70,8 +70,9 @@ def move(left=None, right=None, speed=None, check_only=None, avoid=None):
     return _motion("move", left=left, right=right, speed=speed, check_only=check_only, avoid=avoid)
 
 
-def release(arm, set_down=None):
-    return _motion("release", arm=arm, set_down=set_down)
+def release(arm, set_down=None, on_z=None):
+    """Let go; set_down: lower it until it rests on something first (on_z m: the top of what it is set on)."""
+    return _motion("release", arm=arm, set_down=set_down, on_z=on_z)
 
 
 def handover(giver, taker, mode=None, at=None):

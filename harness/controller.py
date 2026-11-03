@@ -9,9 +9,10 @@ Gravity: every goal is written with a feed-forward offset against the arm's sag 
 still the controller learns its compliance from the encoders, so the arms end where they're told to. Not while its
 gripper squeezes something: the object's weight would read as a softer arm. The servos also stick: where a joint
 settles depends on the way it came (the same spot 1 cm low from one side, 1 cm high from the other), which no gravity
-model fits. So while it holds still, under the same conditions, a trim walks
-each joint's command toward what's left of its error, TRIM_GAIN of it at a time and at most TRIM_MAX_DEG, until a new
-goal resets it. It only ever pulls toward the goal, never past what was asked.
+model fits. So while it holds still (also near the table, also carrying), a trim walks each joint's command toward
+what's left of its error, TRIM_GAIN of it at a time and at most TRIM_MAX_DEG, until a new goal resets it. It only ever
+pulls toward the goal, and stops when the fingertips sit TRIM_HELD_UP_M or more above theirs: something holds them up,
+and the trim would press into it.
 
 Contact: in a trajectory marked contact (a touch-down), a moving arm whose measured fingertips rise CONTACT_M above the
 commanded ones, compared with where they were when the trajectory started (so a sag estimate that's still off doesn't
@@ -68,6 +69,7 @@ LEARN_MIN_Z = 0.03  # m: only from fingertips this high (not resting on the tabl
 TRIM_GAIN = 0.5
 TRIM_MAX_DEG = 3.0
 TRIM_DEADBAND_DEG = 0.15
+TRIM_HELD_UP_M = 0.005  # fingertips this far above their goal rest on something: the trim stops there
 SQUEEZING_MM = 2.0  # the gripper is commanded this much tighter than it is: it's holding something
 STREAM_DEG_S = 150.0  # how fast a streamed goal may move the joints
 STREAM_MM_S = 120.0  # and the gripper
@@ -472,16 +474,22 @@ class Controller:
             else:
                 self.still[s] += 1
             holding = self.goal[s][5] < self.q[s][5] - SQUEEZING_MM
-            if ((self.mode[s] == "hold" or settling) and s in self.arms_k and s not in self.contact and not holding
+            if ((self.mode[s] == "hold" or settling) and s in self.arms_k and s not in self.contact and self.free[s]
                     and self.still[s] >= LEARN_AFTER and self.still[s] % LEARN_EVERY == 0):
                 arm = self.arms_k[s]
+                tip_z = arm.tool(self.q[s])[0][2]
                 # not from an arm still lying where torque came on, folded up or on the table: that teaches the model
                 # nonsense
-                if self.sag_learning and arm.tool(self.q[s])[0][2] > LEARN_MIN_Z and self.free[s]:
+                if self.sag_learning and tip_z > LEARN_MIN_Z and not holding:
                     self.sag[s].learn(arm, self.command(s, self.goal[s]), self.q[s])  # the model's part, not the trim
-                    err = self.goal[s][:5] - self.q[s][:5]
-                    err[np.abs(err) < TRIM_DEADBAND_DEG] = 0.0
-                    self.trim[s] = np.clip(self.trim[s] + TRIM_GAIN * err, -TRIM_MAX_DEG, TRIM_MAX_DEG)
+                # the trim also near the table and while carrying (a grasp ended 1.8 cm short at 1.5 cm up, a cube
+                # carried 37 cm out 6 deg short), but never pressing down: fingertips held up above their goal are
+                # resting on something, and pushing harder would only press into it
+                if tip_z - arm.tool(self.goal[s])[0][2] > TRIM_HELD_UP_M:
+                    continue
+                err = self.goal[s][:5] - self.q[s][:5]
+                err[np.abs(err) < TRIM_DEADBAND_DEG] = 0.0
+                self.trim[s] = np.clip(self.trim[s] + TRIM_GAIN * err, -TRIM_MAX_DEG, TRIM_MAX_DEG)
         self._last_goal = {s: v.copy() for s, v in self.goal.items()}
 
     def _reflexes(self):

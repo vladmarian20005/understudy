@@ -26,6 +26,7 @@ MODEL = "sam-3.1"
 MIN_CONF = 0.5
 ROUND = 0.8  # a mask filling this much of its enclosing circle is a ball
 UPRIGHT_CM = 4.0  # an outline that leans out this much is a standing object, not a flat one
+RADIAL_DEG = 30.0  # if it stretches within this of the line from under the camera
 FLAT_H = 0.025  # m: the height of anything neither round nor standing, a guess
 REACH = 0.50  # m: farther than this from both bases is off the table for us
 FRONT_Y = 0.05  # m: nearer the bases' edge than this is the bases and their cables
@@ -138,7 +139,13 @@ def shape(scene, contour, touches_edge):
     near = s < near_s + 0.3 * (far_s - near_s)
     width = float(t[near].max() - t[near].min())
     h = cz * (1 - (near_s + width) / far_s)
-    if h * 100 > UPRIGHT_CM:  # standing: the base is the near end, as wide as the outline is there
+    # standing only if the outline stretches along the line from under the camera (its side shows that way); a thing
+    # lying turned stretches along its own long side (a sponge lying at 30 deg read "standing, 13 cm")
+    flat_box = cv2.minAreaRect((pts * 1000).astype(np.float32))
+    (fl, fw), fa = flat_box[1], np.radians(flat_box[2])
+    long_dir = np.array([np.cos(fa), np.sin(fa)]) if fl >= fw else np.array([-np.sin(fa), np.cos(fa)])
+    radial = abs(float(long_dir @ u)) > np.cos(np.radians(RADIAL_DEG)) or max(fl, fw) < 1.15 * min(fl, fw)
+    if h * 100 > UPRIGHT_CM and radial:  # standing: the base is the near end, as wide as the outline is there
         centre = foot + u * (near_s + width / 2) + v * float(t[near].mean())
         return centre, h / 2, [width, width, h], 0.0, "upright, at least this tall" if touches_edge else "upright"
     centre, L, W, long_edge = tp.footprint(contour, FLAT_H / 2)
