@@ -6,6 +6,17 @@ Each run can be recorded and trained into an ACT policy.
 
 Our entry to Meta's Global AI Developer Hackathon 2026 (Vlad Marian, Andrei Voinea).
 
+The film (2:51): https://youtu.be/ZgwyoJ4Eaok
+
+## The Meta models
+
+Both through Meta's Model API.
+
+| Model | What it does here |
+|---|---|
+| Muse Spark (`muse-spark-1.3`) | Watches the person's video and says what each hand does and which objects matter. Gives each object's kind, size and colour for the simulator. Drives the arms, one action per turn, from the overhead and both wrist images. Judges recorded episodes |
+| SAM 3.1 (`sam-3.1`) | Segments the objects Muse named, and both hands, in every frame of the video: who held what, when. Finds named objects in the overhead image and places them on the table in cm |
+
 ## Try it in the simulator
 
 No arms or cameras needed, only a Model API key.
@@ -21,6 +32,28 @@ python -m brain --video watch/test_video_balls.mp4
 ```
 
 Each run's steps, images, tokens and cost go to `logs/brain/`.
+
+Or the whole loop from the dashboard, which runs its own simulator (don't start robotd for it):
+
+```bash
+python -m ui --sim        # http://127.0.0.1:8000: drop in watch/test_video_balls.mp4 and describe the task
+```
+
+The simulator takes about two minutes to start.
+
+## From a phone video to the arms
+
+The dashboard takes a video through every stage and shows each one live:
+
+1. **Watch.** Muse Spark watches the video and writes down what each hand does and which objects matter.
+2. **Segment.** SAM 3.1 segments those objects and both hands in every frame; the score says who held what, when
+   (`watch/SCORE.md`).
+3. **Scene.** Muse gives each object's kind, size and colour, and the simulator is rebuilt with them on the table where
+   the arms reach (`watch/simscene.py`). With `python -m ui` on the real arms, this stage is skipped.
+4. **Act.** The brain does the task from Muse's reading of the video, one small step at a time (below), recorded as an
+   episode.
+5. **Judge.** Muse looks at the recorded episode and says whether it worked, which decides whether it trains. Episodes
+   stop at 3 minutes, so longer runs aren't judged yet.
 
 ## On real arms
 
@@ -74,3 +107,8 @@ motors: every motion is checked for reach, the table and the gap between the arm
 ```bash
 python -m pytest harness/tests brain/tests judge/tests watch/tests ui/tests -q
 ```
+
+## Licence
+
+Apache-2.0 (`LICENSE`). The SO-101 arm model in `harness/assets/` is TheRobotStudio's SO-ARM100, also Apache-2.0: where
+each file comes from and what changed is in `harness/assets/SOURCE.md`.
