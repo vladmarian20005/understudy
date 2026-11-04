@@ -1,7 +1,8 @@
 {
   "about": [
     "The rig's cameras, read by cameras/server.py and harness/cameras.py. Camera i in this list publishes on port + i.",
-    "usb: part of the camera's USB product name. size: the MJPEG mode, before rotation. rotate: 0, 90, 180 or -90.",
+    "usb: part of the camera's USB product name; usb_id: its USB vendor and product ids, for when it comes up without",
+    "its name. size: the MJPEG mode, before rotation. rotate: 0, 90, 180 or -90.",
     "slot: USB bytes per microframe to reserve, one of slots (the camera's alternate settings). A slot too small for",
     "the MJPEG bursts gives damaged frames; too big and the cameras don't all fit on one USB controller.",
     "controls: UVC controls by display name, applied in order on every (re)open and again whenever this file changes."
@@ -10,6 +11,7 @@
   "cameras": {
     "overhead": {
       "usb": "C270",
+      "usb_id": [1133, 2085],
       "size": [640, 480],
       "fps": 30,
       "slot": 1024,
@@ -20,6 +22,7 @@
     },
     "left_wrist": {
       "usb": "HD USB Camera",
+      "usb_id": [13028, 37424],
       "size": [1024, 768],
       "fps": 30,
       "slot": 2400,
@@ -31,6 +34,7 @@
     },
     "right_wrist": {
       "usb": "Autodarts DIY Cam",
+      "usb_id": [3141, 6421],
       "size": [640, 480],
       "fps": 30,
       "slot": 800,

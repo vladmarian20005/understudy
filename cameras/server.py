@@ -45,11 +45,13 @@ STALL_S = 0.5  # no new frame for this long: start re-sending the last one
 REPEAT_S = 5.0  # still none after this: stop sending the camera
 READ_TIMEOUT_S = 0.25
 REOPEN_AFTER = 3  # read timeouts in a row before the camera is closed and opened again
+RETRY_MAX_S = 10.0  # a camera that keeps failing to open is retried after 1, 2, 4... s, at most this
 JPEG_QUALITY = 90
 STATS_S = 10.0
 ROTATIONS = {0: None, 90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, -90: cv2.ROTATE_90_COUNTERCLOCKWISE}
 
 quit_event = threading.Event()
+opening = threading.Lock()  # one camera opens at a time: on a shared hub, opens at once fail (Input/output error)
 wake = threading.Event()  # set by a capture thread when it has a new frame for the publisher
 log_file = sys.stdout
 
@@ -103,6 +105,52 @@ def bandwidth_factor(cam):
     return factor
 
 
+def libusb():
+    """libusb through ctypes (the copy pyuvc ships), or None."""
+    import ctypes
+    import glob
+
+    import uvc
+
+    libs = glob.glob(os.path.join(os.path.dirname(uvc.__file__), ".dylibs", "libusb-1.0*.dylib"))
+    if not libs:
+        return None
+    lib = ctypes.CDLL(libs[0])
+    lib.libusb_init.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+    lib.libusb_exit.argtypes = [ctypes.c_void_p]
+    lib.libusb_get_device_list.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))]
+    lib.libusb_get_device_list.restype = ctypes.c_ssize_t
+    lib.libusb_free_device_list.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_int]
+    lib.libusb_get_device_descriptor.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    lib.libusb_get_device_speed.argtypes = [ctypes.c_void_p]
+    return lib
+
+
+def usb_speed(vendor, product):
+    """The link speed a USB device came up at: 'low', 'full', 'high', 'super' or None if it isn't found."""
+    import ctypes
+    import struct
+
+    lib = libusb()
+    ctx = ctypes.c_void_p()
+    if lib is None or lib.libusb_init(ctypes.byref(ctx)):
+        return None
+    try:
+        devs = ctypes.POINTER(ctypes.c_void_p)()
+        n = lib.libusb_get_device_list(ctx, ctypes.byref(devs))
+        try:
+            for i in range(max(n, 0)):
+                desc = ctypes.create_string_buffer(18)
+                if lib.libusb_get_device_descriptor(devs[i], desc) == 0 and \
+                        struct.unpack_from("<HH", desc.raw, 8) == (vendor, product):
+                    return {1: "low", 2: "full", 3: "high"}.get(lib.libusb_get_device_speed(devs[i]), "super")
+        finally:
+            lib.libusb_free_device_list(devs, 1)
+    finally:
+        lib.libusb_exit(ctx)
+    return None
+
+
 # ---- frame sources ------------------------------------------------------------------------------------------------
 class UvcCamera:
     """A real camera through libuvc. read() returns a BGR frame, or None for one damaged in transit, and raises when no
@@ -115,10 +163,17 @@ class UvcCamera:
         import uvc
 
         devices = uvc.device_list()
-        dev = next((d for d in devices if self.cam["usb"] in d["name"]), None)
+        ids = tuple(self.cam.get("usb_id", ()))  # vendor, product: a camera can come up without its name
+        dev = next((d for d in devices if self.cam["usb"] in d["name"]), None) or \
+            next((d for d in devices if ids and (d["idVendor"], d["idProduct"]) == ids), None)
         if dev is None:
-            seen = ", ".join(d["name"] for d in devices) or "none"
+            seen = ", ".join(f"{d['name']} ({d['idVendor']}:{d['idProduct']})" for d in devices) or "none"
             raise RuntimeError(f"{self.cam['usb']} isn't on USB (UVC cameras there: {seen})")
+        if ids and usb_speed(*ids) in ("low", "full"):
+            # Its modes need 480 Mbit/s. Opening it anyway would re-enumerate it (that's how libusb takes a camera from
+            # macOS) for nothing, and every re-enumeration stalls the other cameras for about a second.
+            raise RuntimeError("its USB link came up at 12 Mbit/s, not 480: replug it, into another port or straight "
+                               "into the Mac")
         cap = uvc.Capture(dev["uid"])
         try:
             (w, h), fps = self.cam["size"], self.cam["fps"]
@@ -245,17 +300,21 @@ class Feed:
         self.thread = threading.Thread(target=self.run, daemon=True, name=f"capture-{name}")
 
     def run(self):
-        waiting = None
+        waiting, fails = None, 0
         while not quit_event.is_set():
             try:
-                self.source.open()
+                with opening:
+                    self.source.open()
             except Exception as e:
                 if str(e) != waiting:
                     waiting = str(e)
                     (warn if self.streaming else log)(f"{self.name}: waiting for the camera: {e}")
-                quit_event.wait(1.0)
+                # Each failed open of a real camera re-enumerates it twice (claim and release), which stalls the
+                # cameras that work: back off while it keeps failing.
+                fails += 1
+                quit_event.wait(min(RETRY_MAX_S, 2.0 ** (fails - 1)))
                 continue
-            waiting = None
+            waiting, fails = None, 0
             (w, h), cam = self.cam["size"], self.cam
             log(f"{self.name}: {cam['usb']} {w}x{h} MJPEG at {cam['fps']} fps, USB slot {cam['slot']}, "
                 f"rotated {cam.get('rotate', 0)}, on tcp://127.0.0.1:{self.port}")
