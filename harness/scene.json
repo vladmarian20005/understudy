@@ -1,5 +1,5 @@
 {
-  "measured": "2026-10-24: bases, joint offsets and camera from 19 table touches + fingertip images, 3.3 mm RMS; 2026-11-01: bases, offsets of joints 2-5, the overhead camera's pose and the wrist cameras (lens, pose on the gripper) from a ChArUco board on an iPad, 36 wrist views at 10-30 cm (harness/calib_board.py)",
+  "measured": "2026-10-24: bases, joint offsets and camera from 19 table touches + fingertip images, 3.3 mm RMS; 2026-11-01: bases, offsets of joints 2-5, the overhead camera's pose and the wrist cameras (lens, pose on the gripper) from a ChArUco board on an iPad, 36 wrist views at 10-30 cm (harness/calib_board.py); 2026-11-04: the overhead camera's pose from a ChArUco board on an iPad placed by 10 left wrist views (harness/calib_board.py --overhead)",
   "arms": {
     "left": {
       "base": [
@@ -231,22 +231,22 @@
     ],
     "cam_to_world": [
       [
-        0.995695,
-        -0.041069,
-        0.083093,
-        -0.031754
+        0.998411,
+        -0.052182,
+        -0.021278,
+        -0.007007
       ],
       [
-        -0.059327,
-        -0.971165,
-        0.230908,
-        0.109611
+        -0.041876,
+        -0.939669,
+        0.339512,
+        0.069471
       ],
       [
-        0.071214,
-        -0.234844,
-        -0.969421,
-        0.672862
+        -0.037711,
+        -0.338081,
+        -0.940361,
+        0.674304
       ],
       [
         0.0,

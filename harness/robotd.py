@@ -106,7 +106,8 @@ class Core:
             from .cameras import ZmqCameras
 
             self.world = None
-            self.cameras = ZmqCameras()
+            served = [n for n in os.environ.get("USE_CAMERAS", "").split(",") if n]  # the launcher's subset
+            self.cameras = ZmqCameras(*([served] if served else []))
             self.cameras.wait()
             ios = {s: BusArmIO(self.scene.ports[s], self.scene.calibration_ids[s], self.scene.stroke_mm,
                                opening=self.scene.opening) for s in SIDES}

@@ -20,6 +20,12 @@ fixed fingertip shows in that arm's wrist image, which pins the camera to the fi
 board corners' pixels; the overhead camera's pose from the board. The table frame stays where it was: the table top is
 the board's plane less --thick, the origin midway between the bases and the line between them at the same angle as
 before. --write puts it in scene.json (the old one kept as scene.json.bak); restart robotd and the viewer to use it.
+
+    python -m harness.calib_board capture --overhead --square MM --thick MM [--arm left] [--board X,Y]
+    python -m harness.calib_board fit logs/calib/<stamp> --overhead [--write]
+
+--overhead, after the overhead camera has moved: one arm's wrist camera takes 10 views of the board, which place it on
+the table through the arms' calibration (that stays as it is), and the overhead's pose is fitted to the board.
 """
 import argparse
 import json
@@ -485,6 +491,213 @@ def fit(a):
         print("and harness/scene.json (old one: scene.json.bak): restart robotd and the viewer")
 
 
+# ---- the overhead camera alone -----------------------------------------------------------------------------------------
+OVERHEAD_VIEWS = 10  # wrist views of the board for placing it on the table
+ASIDE_CM = {"left": [-36.0, 12.0], "right": [36.0, 12.0]}  # each arm's fingertips out to its own side, high and level,
+ASIDE_Z = 26.0  # so the overhead sees all of the table
+
+
+def wrist_cal(scj, side, size):
+    """side's wrist camera from scene.json: (its pose in gripper_link, K for an image size (w, h), distortion)."""
+    cal = scj["arms"][side]["wrist"]
+    K = np.array(cal["K"], dtype=float)
+    K[:2] *= size[0] / cal["size"][0]
+    return np.array(cal["cam_in_gripper"], dtype=float), K, np.array(cal["dist"], dtype=float)
+
+
+def board_at(b, mid_m, thick_m):
+    """The board lying screen up with its long side along the table's x, its middle at mid_m (x, y)."""
+    R = np.diag([1.0, -1.0, -1.0])  # the board's y runs down the screen, its z into it
+    mid = b.getChessboardCorners().mean(axis=0)
+    return T_of(R, np.array([mid_m[0], mid_m[1], thick_m]) - R @ mid)
+
+
+def board_from_wrist(sc, scj, b, views, flat_m=None):
+    """The board's pose in the table frame from wrist views ({side, joints, obj, px, size}), through the arms'
+    calibration: each view's PnP for a start, then all the views' pixels at once. With flat_m, the board lies flat with
+    its screen that high, and only its place and turn on the table are fitted: an arm's views each sit a degree or so
+    off its kinematics (the left's 1.2 deg median in a full fit), which tilts a free board by a few degrees. Returns
+    (pose, per-view rms px, per-view distance of its own estimate's middle from the fitted one, cm)."""
+    from scipy.optimize import least_squares
+    from scipy.spatial.transform import Rotation
+    cams, ests = [], []
+    for v in views:
+        T, K, dist = wrist_cal(scj, v["side"], v["size"])
+        G = sc.arms[v["side"]].frames(np.asarray(v["joints"], dtype=float))[-1] @ T
+        ok, rv, tv = cv2.solvePnP(v["obj"], v["px"], K, dist, flags=cv2.SOLVEPNP_IPPE)
+        ok, rv, tv = cv2.solvePnP(v["obj"], v["px"], K, dist, rv, tv, True)
+        cams.append((G, K, dist))
+        ests.append(G @ T_of(rodrigues(rv), tv.ravel()))
+    T0 = T_of(Rotation.from_matrix([e[:3, :3] for e in ests]).mean().as_matrix(),
+              np.median([e[:3, 3] for e in ests], axis=0))
+    if flat_m is not None:
+        yaw = math.atan2(T0[1, 0], T0[0, 0])
+        T0 = T_of(rodrigues([0.0, 0.0, yaw]) @ np.diag([1.0, -1.0, -1.0]), [T0[0, 3], T0[1, 3], flat_m])
+
+    def pose(x):  # degrees and mm on top of T0: (yaw, x, y) when flat, else a rotation and a shift
+        if flat_m is not None:
+            return T_of(rodrigues([0.0, 0.0, math.radians(x[0])]) @ T0[:3, :3], T0[:3, 3] + [x[1] / 1000, x[2] / 1000, 0])
+        return T_of(rodrigues(np.radians(x[:3])) @ T0[:3, :3], T0[:3, 3] + x[3:] / 1000)
+
+    def residuals(x):
+        T = pose(x)
+        return np.concatenate([(project(G, K, dist, (T[:3, :3] @ v["obj"].T).T + T[:3, 3]) - v["px"]).ravel()
+                               for v, (G, K, dist) in zip(views, cams)])
+
+    x0 = np.zeros(3 if flat_m is not None else 6)
+    T = pose(least_squares(residuals, x0, loss="soft_l1", f_scale=10.0).x)
+    rms = []
+    for v, (G, K, dist) in zip(views, cams):
+        e = project(G, K, dist, (T[:3, :3] @ v["obj"].T).T + T[:3, 3]) - v["px"]
+        rms.append(float(np.sqrt((e ** 2).sum(axis=1).mean())))
+    mid = b.getChessboardCorners().mean(axis=0)
+    spread = [float(np.linalg.norm((e[:3, :3] @ mid + e[:3, 3]) - (T[:3, :3] @ mid + T[:3, 3])) * 100) for e in ests]
+    return T, rms, spread
+
+
+def capture_overhead(a):
+    """One arm's wrist views of the board, and the overhead's images of it, for fit --overhead. The board's place for
+    planning the views: --board, else the overhead's with its current calibration (wrong once the camera has moved); the
+    first wrist view that sees most of it puts it right, and the rest are planned from there."""
+    from . import robot
+    from .cameras import ZmqCameras
+    if not robot.status().get("armed"):
+        raise SystemExit("the arms are off: switch torque on (key a in robotd)")
+    side = a.arm or "left"
+    sc, scj = Scene(), json.load(open(SCENE))
+    b = board(a.square)
+    names = ["overhead", WRISTS[side]]
+    cams = ZmqCameras(names)
+    cams.wait()
+    time.sleep(1.0)
+    run = os.path.join(OUT, time.strftime("%Y%m%d-%H%M%S"))
+    os.makedirs(run)
+    print(f"both arms to ready; saving to {os.path.relpath(run, ROOT)}", flush=True)
+    r = robot.home()
+    if r.get("outcome") != "done":
+        raise SystemExit(f"couldn't get to ready: {r.get('why')}")
+    time.sleep(SETTLE_S)
+    imgs = cams.grab(names)
+    cv2.imwrite(os.path.join(run, "overhead_ready.png"), imgs["overhead"])
+    size = list(imgs[WRISTS[side]].shape[1::-1])
+    if a.board:
+        T_wb = board_at(b, [float(v) / 100 for v in a.board.split(",")], a.thick / 1000)
+    else:
+        T_wb, n = board_in_table(sc, b, imgs["overhead"])
+        print(f"the overhead sees {n} corners", flush=True)
+    mid = T_wb[:3, :3] @ b.getChessboardCorners().mean(axis=0) + T_wb[:3, 3]
+    print(f"planning from the board's middle at ({mid[0] * 100:.1f}, {mid[1] * 100:.1f}) cm", flush=True)
+    json.dump(dict(square_mm=a.square, thick_mm=a.thick, T_wb_old=T_wb.tolist(), scene=scj, sizes={side: size},
+                   overhead=side), open(os.path.join(run, "meta.json"), "w"), indent=1)
+    log = open(os.path.join(run, "views.jsonl"), "a")
+    q_now = np.array(robot.status()["arms"][side]["joints"])
+    plan = poses(sc, side, T_wb, q_now, a.thick / 10, size)[:OVERHEAD_VIEWS]
+    print(f"{side}: {len(plan)} views", flush=True)
+    located, k = False, 0
+    while plan:
+        kf = plan.pop(0)["kf"]
+        k += 1
+        chk = robot.move(**{side: [kf]}, speed="slow", check_only=True)
+        if chk.get("outcome") != "done":
+            print(f"  {k}. {kf}: refused ({chk.get('why')})", flush=True)
+            continue
+        r = robot.move(**{side: [kf]}, speed="slow")
+        if r.get("outcome") != "done":
+            print(f"  {k}. {kf}: {r.get('outcome')} ({r.get('why')})", flush=True)
+            if r.get("outcome") == "stopped":
+                raise SystemExit("stopped")
+            continue
+        time.sleep(SETTLE_S)
+        st = robot.status()["arms"]
+        imgs = cams.grab(names)
+        name = f"{side}_{k - 1:02d}"
+        cv2.imwrite(os.path.join(run, name + ".png"), imgs[WRISTS[side]])
+        cv2.imwrite(os.path.join(run, name + "_overhead.png"), imgs["overhead"])
+        d = detect(b, imgs[WRISTS[side]])
+        log.write(json.dumps(dict(side=side, view=name, kf=kf, joints=st[side]["joints"],
+                                  tip_cm=st[side]["tip_cm"], corners=0 if d is None else len(d[1]))) + "\n")
+        log.flush()
+        print(f"  {k}. {kf}: {0 if d is None else len(d[1])} corners", flush=True)
+        if not located and d is not None and len(d[1]) >= 20:
+            located = True
+            T_new = board_from_wrist(sc, scj, b, [dict(side=side, joints=st[side]["joints"], obj=d[0], px=d[1],
+                                                       size=size)], a.thick / 1000)[0]
+            new_mid = T_new[:3, :3] @ b.getChessboardCorners().mean(axis=0) + T_new[:3, 3]
+            off = np.linalg.norm(new_mid[:2] - mid[:2]) * 100
+            print(f"  the wrist puts the board's middle at ({new_mid[0] * 100:.1f}, {new_mid[1] * 100:.1f}) cm, "
+                  f"{off:.1f} cm from the plan's", flush=True)
+            if off > 1.0:
+                plan = poses(sc, side, T_new, np.array(st[side]["joints"]), a.thick / 10, size)[:max(
+                    0, OVERHEAD_VIEWS - k)]
+    others = [s for s in WRISTS if s != side]
+    moved = robot.move(**{s: {"xy": ASIDE_CM[s], "z": ASIDE_Z, "pitch": 0} for s in [side] + others})
+    if moved.get("outcome") == "done":
+        time.sleep(SETTLE_S)
+        cv2.imwrite(os.path.join(run, "overhead_clear.png"), cams.grab(["overhead"])["overhead"])
+    else:
+        print(f"couldn't swing the arms aside ({moved.get('why')}): the overhead images have an arm in them")
+    robot.home()
+    print(f"done: python -m harness.calib_board fit {os.path.relpath(run, ROOT)} --overhead")
+
+
+def fit_overhead(a, run, meta):
+    """The overhead camera's pose from the board, placed on the table by one arm's wrist views through the arms'
+    calibration in scene.json, which stays as it is. The camera's lens (K, distortion) stays too."""
+    scj = json.load(open(SCENE))
+    sc = Scene()
+    b = board(a.square or meta["square_mm"])
+    views = []
+    for v in (json.loads(line) for line in open(os.path.join(run, "views.jsonl"))):
+        d = detect(b, cv2.imread(os.path.join(run, v["view"] + ".png")))
+        if d is not None and len(d[1]) >= 12:
+            views.append(dict(v, obj=d[0], px=d[1], size=meta["sizes"][v["side"]]))
+    if len(views) < 3:
+        raise SystemExit(f"only {len(views)} wrist views with the board: capture again")
+    free = board_from_wrist(sc, scj, b, views)[0]
+    T_wb, rms, spread = board_from_wrist(sc, scj, b, views, meta["thick_mm"] / 1000)
+    mid = T_wb[:3, :3] @ b.getChessboardCorners().mean(axis=0) + T_wb[:3, 3]
+    fmid = free[:3, :3] @ b.getChessboardCorners().mean(axis=0) + free[:3, 3]
+    sides = sorted({v["side"] for v in views})
+    print(f"{' and '.join(sides)} wrist: {len(views)} views, rms {np.median(rms):.1f} px median (worst {max(rms):.1f}); "
+          f"each view's own board {np.median(spread):.2f} cm from the fitted one (worst {max(spread):.2f})")
+    print(f"the board's middle at ({mid[0] * 100:.1f}, {mid[1] * 100:.1f}) cm, lying flat with its screen "
+          f"{meta['thick_mm'] / 10:.1f} cm up; fitted free it would be at ({fmid[0] * 100:.1f}, {fmid[1] * 100:.1f}, "
+          f"{fmid[2] * 100:.1f}) cm, tilted {np.degrees(math.acos(min(1.0, -free[2, 2]))):.1f} deg")
+    seen, n_img = {}, 0  # board point -> its pixels in each overhead image: the camera and the board stay put, and
+    for f in sorted(os.listdir(run)):  # each image finds a different part of the board (the arm, glare)
+        if f.endswith("overhead.png") or f in ("overhead_ready.png", "overhead_clear.png"):
+            d = detect(b, cv2.imread(os.path.join(run, f)))
+            n_img += 1
+            for o, p in zip(*(d or ((), ()))):
+                seen.setdefault(tuple(np.round(o * 1e4).astype(int)), []).append(p)
+    keep = [(np.array(k) / 1e4, np.median(v, axis=0)) for k, v in seen.items() if len(v) >= 2]
+    if len(keep) < MIN_CORNERS:
+        raise SystemExit("the overhead doesn't see the board")
+    obj, px = (np.array(c, dtype=np.float64) for c in zip(*keep))
+    f = f"{n_img} images"
+    cam = sc.camera
+    ok, rv, tv = cv2.solvePnP(obj, px, cam.K, cam.dist, flags=cv2.SOLVEPNP_IPPE)
+    ok, rv, tv = cv2.solvePnP(obj, px, cam.K, cam.dist, rv, tv, True)
+    T_wc = T_wb @ np.linalg.inv(T_of(rodrigues(rv), tv.ravel()))
+    e = project(T_wc, cam.K, cam.dist, (T_wb[:3, :3] @ obj.T).T + T_wb[:3, 3]) - px
+    turned = np.degrees(np.linalg.norm(cv2.Rodrigues(cam.cam_to_world[:3, :3].T @ T_wc[:3, :3])[0]))
+    print(f"overhead ({f}): {len(px)} corners, rms {np.sqrt((e ** 2).sum(axis=1).mean()):.2f} px; camera at "
+          f"{np.round(T_wc[:3, 3] * 100, 1).tolist()} cm (was {np.round(cam.cam_to_world[:3, 3] * 100, 1).tolist()}), "
+          f"turned {turned:.1f} deg")
+    new = json.loads(json.dumps(scj))
+    new["camera"]["cam_to_world"] = np.round(T_wc, 6).tolist()
+    new["measured"] = (scj.get("measured", "") + f"; {time.strftime('%Y-%m-%d')}: the overhead camera's pose from a "
+                       f"ChArUco board on an iPad placed by {len(views)} {' and '.join(sides)} wrist views (harness/calib_board.py "
+                       f"--overhead, {os.path.basename(os.path.normpath(run))})")
+    path = os.path.join(run, "scene_new.json")
+    json.dump(new, open(path, "w"), indent=2)
+    print(f"wrote {os.path.relpath(path, ROOT)}")
+    if a.write:
+        shutil.copy(SCENE, SCENE + ".bak")
+        shutil.copy(path, SCENE)
+        print("and harness/scene.json (old one: scene.json.bak): restart robotd and the viewer")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -493,19 +706,26 @@ def main():
     c.add_argument("--square", type=float, required=True, help="one square, mm")
     c.add_argument("--thick", type=float, required=True, help="the screen's height over the table, mm")
     c.add_argument("--arm", choices=list(WRISTS), help="only this arm")
+    c.add_argument("--overhead", action="store_true", help="only the overhead camera: one arm (--arm, default left) "
+                   "places the board, the arms' calibration stays")
+    c.add_argument("--board", help="X,Y: the board's middle on the table, cm, if the overhead's calibration can't say")
     f = sub.add_parser("fit")
     f.add_argument("run")
     f.add_argument("--tip", action="append", help="side=U,V: the fixed fingertip in that arm's wrist image")
     f.add_argument("--square", type=float, help="one square, mm, if not as at the capture")
+    f.add_argument("--overhead", action="store_true", help="only the overhead camera's pose (a capture --overhead)")
     f.add_argument("--write", action="store_true")
     a = ap.parse_args()
     os.makedirs(OUT, exist_ok=True)
     if a.cmd == "board":
         print(write_png(os.path.join(OUT, "charuco_ipad13.png")))
     elif a.cmd == "capture":
-        capture(a)
+        capture_overhead(a) if a.overhead else capture(a)
     elif a.cmd == "fit":
-        fit(a)
+        if a.overhead:
+            fit_overhead(a, a.run, json.load(open(os.path.join(a.run, "meta.json"))))
+        else:
+            fit(a)
 
 
 if __name__ == "__main__":
